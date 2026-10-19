@@ -152,6 +152,18 @@ const cases: Case[] = [
     loggedOutDecision: { type: "prompt-login" },
   },
   {
+    href: "https://space.bilibili.com/2/lists",
+    page: { kind: "work", work: "collection", mid: 2, id: "" },
+    loggedInDecision: { type: "work-stripped" },
+    loggedOutDecision: { type: "prompt-login" },
+  },
+  {
+    href: "https://space.bilibili.com/999/lists",
+    page: { kind: "work", work: "collection", mid: 999, id: "" },
+    loggedInDecision: { type: "redirect-home" },
+    loggedOutDecision: { type: "prompt-login" },
+  },
+  {
     href: "https://space.bilibili.com/999/cheese",
     page: { kind: "work", work: "course", mid: 999, id: "" },
     loggedInDecision: { type: "redirect-home" },

@@ -152,21 +152,21 @@ describe("parseDynamics", () => {
           title: "投稿标题",
           authorMid: 10,
           authorName: "UP主",
-          publishedAt: 1729,
+          publishedAt: 1_729_000,
         },
         {
           id: "1002",
           majorType: "live",
           authorMid: 10,
           authorName: "UP主",
-          publishedAt: 1729,
+          publishedAt: 1_729_000,
         },
         {
           id: "1003",
           majorType: "opus",
           authorMid: 10,
           authorName: "UP主",
-          publishedAt: 1729,
+          publishedAt: 1_729_000,
         },
       ],
       nextOffset: "next-cursor",
@@ -199,7 +199,7 @@ describe("parseDynamics", () => {
           title: "正常",
           authorMid: 10,
           authorName: "UP主",
-          publishedAt: 1729,
+          publishedAt: 1_729_000,
         },
       ],
       nextOffset: null,
@@ -250,8 +250,18 @@ describe("listUpSubmissions", () => {
 describe("parseViewOwner", () => {
   it("reads the video owner", () => {
     expect(
-      parseViewOwner({ code: 0, data: { owner: { mid: 9, name: "九" } } }),
-    ).toEqual({ mid: 9, name: "九" });
+      parseViewOwner({
+        code: 0,
+        data: { bvid: "BV1xx", owner: { mid: 9, name: "九" } },
+      }),
+    ).toEqual({ mid: 9, name: "九", bvid: "BV1xx" });
+  });
+
+  it("returns null when the owner mid is missing or zero", () => {
+    expect(parseViewOwner({ code: 0, data: {} })).toBeNull();
+    expect(
+      parseViewOwner({ code: 0, data: { owner: { mid: 0, name: "零" } } }),
+    ).toBeNull();
   });
 });
 
@@ -265,6 +275,7 @@ describe("getVideoOwner", () => {
     await expect(getVideoOwner("BV1xx", fetchImpl)).resolves.toEqual({
       mid: 9,
       name: "九",
+      bvid: "",
     });
     expect(mock.mock.calls[0][0]).toBe(
       "https://api.bilibili.com/x/web-interface/view?bvid=BV1xx",
@@ -281,6 +292,13 @@ describe("getVideoOwner", () => {
     await getVideoOwner("av42", fetchImpl);
     expect(mock.mock.calls[0][0]).toBe(
       "https://api.bilibili.com/x/web-interface/view?aid=42",
+    );
+  });
+
+  it("rejects when the owner cannot be parsed", async () => {
+    const { fetchImpl } = fakeFetch({ code: 0, data: {} });
+    await expect(getVideoOwner("BV1xx", fetchImpl)).rejects.toThrow(
+      /video owner unavailable/,
     );
   });
 });

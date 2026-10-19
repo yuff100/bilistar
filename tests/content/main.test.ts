@@ -1,8 +1,11 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  hasMoreSubmissions,
   loadFollowings,
   loadSubmissions,
+  resetPageRuntime,
   start,
   type PageEnv,
 } from "../../src/content/main.js";
@@ -44,9 +47,11 @@ type WorldState = {
   followings: Array<{ mid: number; name: string }>;
   feedAll: unknown[];
   feedAllOffset: string;
-  viewOwner: { mid: number; name: string };
+  viewOwner: { mid: number; name: string; bvid?: string };
   workAuthorMid: number;
   modifyCode: number;
+  spaceOffset: string;
+  spaceItems: unknown[] | null;
 };
 
 function makeWorld(href: string, overrides: Partial<WorldState> = {}) {
@@ -65,6 +70,8 @@ function makeWorld(href: string, overrides: Partial<WorldState> = {}) {
     viewOwner: { mid: 2, name: "影视飓风" },
     workAuthorMid: 2,
     modifyCode: 0,
+    spaceOffset: "",
+    spaceItems: null,
     ...overrides,
   };
 
@@ -100,11 +107,13 @@ function makeWorld(href: string, overrides: Partial<WorldState> = {}) {
         return {
           code: 0,
           data: {
-            items: [
-              rawArchive(`s${mid}-1`, `BVSP${mid}1`, `UP${mid}的投稿一`, mid, `UP${mid}`, 2001),
-              rawArchive(`s${mid}-2`, `BVSP${mid}2`, `UP${mid}的投稿二`, mid, `UP${mid}`, 2002),
-            ],
-            offset: "",
+            items:
+              state.spaceItems ??
+              [
+                rawArchive(`s${mid}-1`, `BVSP${mid}1`, `UP${mid}的投稿一`, mid, `UP${mid}`, 2001),
+                rawArchive(`s${mid}-2`, `BVSP${mid}2`, `UP${mid}的投稿二`, mid, `UP${mid}`, 2002),
+              ],
+            offset: state.spaceOffset,
           },
         };
       }
@@ -112,7 +121,13 @@ function makeWorld(href: string, overrides: Partial<WorldState> = {}) {
         return { code: state.modifyCode };
       }
       if (url.includes("/x/web-interface/view")) {
-        return { code: 0, data: { owner: state.viewOwner } };
+        return {
+          code: 0,
+          data: {
+            bvid: state.viewOwner.bvid ?? "",
+            owner: { mid: state.viewOwner.mid, name: state.viewOwner.name },
+          },
+        };
       }
       if (url.includes("/x/article/viewinfo")) {
         return { code: 0, data: { mid: state.workAuthorMid } };
@@ -122,14 +137,16 @@ function makeWorld(href: string, overrides: Partial<WorldState> = {}) {
   }));
 
   const replace = vi.fn();
+  const reload = vi.fn();
   const env: PageEnv = {
     href,
     document,
     fetchImpl: fetchMock as unknown as typeof fetch,
     cookie: "SESSDATA=secret; bili_jct=tok123",
     replace,
+    reload,
   };
-  return { env, replace, fetchMock, state };
+  return { env, replace, reload, fetchMock, state };
 }
 
 const VIDEO_FIXTURE = `
@@ -151,6 +168,7 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  resetPageRuntime(document);
   document.body.innerHTML = "";
 });
 
@@ -226,12 +244,12 @@ describe("loadSubmissions", () => {
     );
 
     expect(page.items).toHaveLength(20);
-    expect(page.nextOffset).toBeNull();
+    expect(hasMoreSubmissions(page.cursor)).toBe(true);
     for (const item of page.items) {
       expect(item.bvid).toMatch(/^BVA/);
       expect(item.title).not.toContain("直播");
     }
-    // 从新到旧排列：最新的 BVA20 在最前，最旧的 BVA0 被截掉。
+    // 从新到旧排列：最新的 BVA20 在最前，最旧的 BVA0 留到下一页。
     expect(page.items[0].bvid).toBe("BVA20");
     expect(page.items[1].bvid).toBe("BVA19");
     expect(page.items[19].bvid).toBe("BVA1");
@@ -240,21 +258,82 @@ describe("loadSubmissions", () => {
         page.items[i + 1].publishedAt,
       );
     }
+    expect(page.items[0].publishedAt).toBe(1020 * 1000);
+
+    const rest = await loadSubmissions(
+      { scope: "all" },
+      page.cursor,
+      fetchMock as unknown as typeof fetch,
+    );
+    expect(rest.items.map((item) => item.bvid)).toEqual(["BVA0"]);
+    expect(hasMoreSubmissions(rest.cursor)).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("第二页从第 21 条开始，不重复也不遗漏", async () => {
+    const first = Array.from({ length: 25 }, (_, i) =>
+      rawArchive(`a${i}`, `BVA${i}`, `稿${i}`, 2, "UP", 3000 - i),
+    );
+    const second = Array.from({ length: 5 }, (_, i) =>
+      rawArchive(`b${i}`, `BVB${i}`, `续${i}`, 2, "UP", 2000 - i),
+    );
+    let call = 0;
+    const fetchMock = vi.fn(async (input: unknown) => ({
+      json: async () => {
+        call += 1;
+        if (call === 1) {
+          return { code: 0, data: { items: first, offset: "page-2" } };
+        }
+        return { code: 0, data: { items: second, offset: "" } };
+      },
+    }));
+
+    const page1 = await loadSubmissions(
+      { scope: "all" },
+      null,
+      fetchMock as unknown as typeof fetch,
+    );
+    expect(page1.items).toHaveLength(20);
+    expect(page1.items[0].bvid).toBe("BVA0");
+    expect(page1.items[19].bvid).toBe("BVA19");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const page2 = await loadSubmissions(
+      { scope: "all" },
+      page1.cursor,
+      fetchMock as unknown as typeof fetch,
+    );
+    expect(page2.items[0].bvid).toBe("BVA20");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("offset=page-2");
+    const all = [...page1.items, ...page2.items].map((item) => item.bvid);
+    expect(new Set(all).size).toBe(all.length);
+    expect(all).toEqual([
+      ...Array.from({ length: 25 }, (_, i) => `BVA${i}`),
+      ...Array.from({ length: 5 }, (_, i) => `BVB${i}`),
+    ]);
+    expect(hasMoreSubmissions(page2.cursor)).toBe(false);
   });
 
   it("scope up: 走空间动态接口并在原地按 bvid 去重排序", async () => {
+    let call = 0;
     const fetchMock = vi.fn(async (_input: unknown) => ({
-      json: async () => ({
-        code: 0,
-        data: {
-          items: [
-            rawArchive("u1", "BVU1", "第一支", 5, "UP5", 200),
-            rawArchive("u2", "BVU2", "第二支", 5, "UP5", 300),
-            rawArchive("u3", "BVU2", "第二支（重复）", 5, "UP5", 400),
-          ],
-          offset: "cursor-up",
-        },
-      }),
+      json: async () => {
+        call += 1;
+        if (call === 1) {
+          return {
+            code: 0,
+            data: {
+              items: [
+                rawArchive("u1", "BVU1", "第一支", 5, "UP5", 200),
+                rawArchive("u2", "BVU2", "第二支", 5, "UP5", 300),
+                rawArchive("u3", "BVU2", "第二支（重复）", 5, "UP5", 400),
+              ],
+              offset: "cursor-up",
+            },
+          };
+        }
+        return { code: 0, data: { items: [], offset: "" } };
+      },
     }));
 
     const page = await loadSubmissions(
@@ -264,8 +343,9 @@ describe("loadSubmissions", () => {
     );
 
     expect(String(fetchMock.mock.calls[0][0])).toContain("host_mid=5");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("offset=cursor-up");
     expect(page.items.map((item) => item.bvid)).toEqual(["BVU2", "BVU1"]);
-    expect(page.nextOffset).toBe("cursor-up");
+    expect(hasMoreSubmissions(page.cursor)).toBe(false);
   });
 });
 
@@ -355,9 +435,12 @@ describe("start", () => {
     );
     expect(allFeeds).toHaveLength(2);
     expect(String(allFeeds[1][0])).toContain("offset=cursor-2");
-    expect(
-      document.querySelectorAll("#follows-root main [data-bvid]").length,
-    ).toBe(20);
+    const cards = [
+      ...document.querySelectorAll("#follows-root main [data-bvid]"),
+    ].map((node) => node.getAttribute("data-bvid"));
+    expect(cards).toHaveLength(21);
+    expect(new Set(cards).size).toBe(21);
+    expect(cards[cards.length - 1]).toBe("BVM20");
   });
 
   it("已关注的空间页变成首页且只显示这个 UP 的投稿", async () => {
@@ -370,7 +453,7 @@ describe("start", () => {
     const cards = [...document.querySelectorAll("#follows-root main [data-bvid]")].map(
       (node) => node.getAttribute("data-bvid"),
     );
-    expect(cards).toEqual(["BVUP2"]);
+    expect(cards).toEqual(["BVSP22", "BVSP21"]);
     expect(
       document.querySelector('a[href="https://space.bilibili.com/2/article"]'),
     ).not.toBeNull();
@@ -451,7 +534,7 @@ describe("start", () => {
     expect(String(init.body)).toContain("csrf=tok123");
   });
 
-  it("关注成功后进入已关注界面，再跑一次策略后评论区留在夹具里", async () => {
+  it("关注成功后刷新，重新进入已关注播放页时评论还在", async () => {
     setFixture(VIDEO_FIXTURE);
     const world = makeWorld("https://www.bilibili.com/video/BV1xx", {
       viewOwner: { mid: 999, name: "路人" },
@@ -467,17 +550,10 @@ describe("start", () => {
     button?.click();
     await settle();
 
+    expect(world.reload).toHaveBeenCalledTimes(1);
     expect(world.replace).not.toHaveBeenCalled();
-    expect(document.querySelector("[data-role='follow-error']")).toBeNull();
-    expect(
-      document.querySelector('a[data-action="back-home"]')?.textContent,
-    ).toBe("返回关注");
-    const sideBvids = [...document.querySelectorAll("#follows-up-videos [data-bvid]")].map(
-      (node) => node.getAttribute("data-bvid"),
-    );
-    expect(sideBvids).toEqual(["BVSP9992", "BVSP9991"]);
+    expect(document.querySelector("#comment")).toBeNull();
 
-    // 关注关系已变化（模拟刷新后重新执行策略）
     world.state.followings.push({ mid: 999, name: "路人" });
     setFixture(VIDEO_FIXTURE);
     await start(world.env);
@@ -490,7 +566,16 @@ describe("start", () => {
     expect(
       document.querySelector('a[data-action="back-home"]')?.textContent,
     ).toBe("返回关注");
-    expect(document.querySelector("#follows-up-videos")).not.toBeNull();
+    const sideLinks = [
+      ...document.querySelectorAll("#follows-up-videos a[data-bvid]"),
+    ];
+    expect(sideLinks.map((node) => node.getAttribute("data-bvid"))).toEqual([
+      "BVSP9992",
+      "BVSP9991",
+    ]);
+    expect(sideLinks[0]?.getAttribute("href")).toBe(
+      "https://www.bilibili.com/video/BVSP9992",
+    );
     expect(
       document.querySelector('button[data-action="follow"]'),
     ).toBeNull();
@@ -551,7 +636,233 @@ describe("start", () => {
     expect(world.replace).toHaveBeenCalledTimes(1);
     expect(world.replace).toHaveBeenCalledWith(HOME_URL);
   });
+
+  it("请求返回之前，首页上的原站内容已经不在", async () => {
+    setFixture(
+      `<div id="biliMainHeader">推荐</div><li data-bvid="BV推荐">热门</li>`,
+    );
+    const world = makeWorld("https://www.bilibili.com/");
+    const release = holdFirstFetch(world.fetchMock);
+
+    const pending = start(world.env);
+
+    expect(world.fetchMock).toHaveBeenCalled();
+    expect(document.querySelector("#biliMainHeader")).toBeNull();
+    expect(document.querySelector('[data-bvid="BV推荐"]')).toBeNull();
+    expect(document.getElementById("follows-only-cover")).not.toBeNull();
+    release();
+    await pending;
+    expect(document.querySelector("#follows-root")).not.toBeNull();
+  });
+
+  it("请求失败后页面保持空白，不回到原站", async () => {
+    setFixture(VIDEO_FIXTURE);
+    const world = makeWorld("https://www.bilibili.com/video/BV1xx");
+    world.fetchMock.mockRejectedValue(new Error("down"));
+
+    await expect(start(world.env)).rejects.toThrow("down");
+
+    expect(document.querySelector("video")).toBeNull();
+    expect(document.querySelector("#reco_list")).toBeNull();
+    expect(document.querySelector("#comment")).toBeNull();
+    expect(document.querySelector("#follows-root")).toBeNull();
+    expect(
+      document.documentElement.classList.contains("follows-only-covered"),
+    ).toBe(true);
+  });
+
+  it("历史页在决策前保留列表，请求失败后也不留原站", async () => {
+    setFixture(`<ul id="history-list"><li>看过</li></ul>`);
+    const world = makeWorld("https://www.bilibili.com/history");
+    const release = holdFirstFetch(world.fetchMock);
+
+    const pending = start(world.env);
+    expect(document.querySelector("#history-list")).not.toBeNull();
+    release();
+    await pending;
+    expect(document.querySelector("#history-list")).not.toBeNull();
+
+    resetPageRuntime(document);
+    setFixture(`<ul id="history-list"><li>看过</li></ul>`);
+    const failed = makeWorld("https://www.bilibili.com/history");
+    failed.fetchMock.mockRejectedValue(new Error("down"));
+    await expect(start(failed.env)).rejects.toThrow("down");
+    expect(document.querySelector("#history-list")).toBeNull();
+  });
+
+  it("登录页不被清掉，也不发请求", async () => {
+    setFixture(`<form id="login-form"></form>`);
+    const world = makeWorld("https://passport.bilibili.com/login");
+
+    await start(world.env);
+
+    expect(world.fetchMock).not.toHaveBeenCalled();
+    expect(document.querySelector("#login-form")).not.toBeNull();
+    expect(
+      document.documentElement.classList.contains("follows-only-covered"),
+    ).toBe(false);
+  });
+
+  it("未关注专栏在作者查询完成前就被盖住", async () => {
+    setFixture(`<div id="article-content"><a href="/v/popular">推荐</a></div>`);
+    const world = makeWorld("https://www.bilibili.com/read/cv1", {
+      workAuthorMid: 999,
+    });
+    const release = holdFirstFetch(world.fetchMock);
+
+    const pending = start(world.env);
+    const article = document.querySelector("#article-content") as HTMLElement;
+    expect(article).not.toBeNull();
+    expect(
+      document.documentElement.classList.contains("follows-only-covered"),
+    ).toBe(true);
+    expect(getComputedStyle(article).display).toBe("none");
+    release();
+    await pending;
+    expect(world.replace).toHaveBeenCalledWith(HOME_URL);
+    expect(document.querySelector("#article-content")).toBeNull();
+  });
+
+  it("首页点某个 UP 后改拉他的投稿，继续看走他的游标", async () => {
+    const spaceItems = Array.from({ length: 21 }, (_, i) =>
+      rawArchive(`p${i}`, `BVSEL${i}`, `投稿${i}`, 2, "影视飓风", 4000 - i),
+    );
+    const world = makeWorld("https://www.bilibili.com/", {
+      spaceItems,
+      spaceOffset: "space-2",
+    });
+
+    await start(world.env);
+    (document.querySelector('[data-follows-mid="2"]') as HTMLElement).click();
+    await settle();
+
+    let cards = [
+      ...document.querySelectorAll("#follows-root main [data-bvid]"),
+    ].map((node) => node.getAttribute("data-bvid"));
+    expect(cards).toHaveLength(20);
+    expect(cards[0]).toBe("BVSEL0");
+    expect(cards).not.toContain("BVUP3");
+    const spaceCalls = () =>
+      world.fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("feed/space"),
+      );
+    expect(spaceCalls()).toHaveLength(1);
+    expect(String(spaceCalls()[0][0])).toContain("host_mid=2");
+
+    const more = document.querySelector(
+      "#follows-root main button",
+    ) as HTMLButtonElement;
+    expect(more.textContent).toBe("继续看");
+    more.click();
+    await settle();
+
+    expect(spaceCalls()).toHaveLength(2);
+    expect(String(spaceCalls()[1][0])).toContain("offset=space-2");
+    cards = [
+      ...document.querySelectorAll("#follows-root main [data-bvid]"),
+    ].map((node) => node.getAttribute("data-bvid"));
+    expect(cards).toHaveLength(21);
+    expect(cards[20]).toBe("BVSEL20");
+    expect(new Set(cards).size).toBe(21);
+
+    (document.querySelector('[data-follows="all"]') as HTMLElement).click();
+    await settle();
+    cards = [
+      ...document.querySelectorAll("#follows-root main [data-bvid]"),
+    ].map((node) => node.getAttribute("data-bvid"));
+    expect(cards).toEqual(["BVUP3", "BVUP2"]);
+  });
+
+  it("已关注合集目录留在页面上，不回首页", async () => {
+    setFixture(
+      `<div id="biliMainHeader"></div><div id="lists">合集</div>`,
+    );
+    const world = makeWorld("https://space.bilibili.com/2/lists");
+
+    await start(world.env);
+
+    expect(world.replace).not.toHaveBeenCalled();
+    expect(document.querySelector("#biliMainHeader")).toBeNull();
+    expect(document.querySelector("#lists")).not.toBeNull();
+  });
+
+  it("侧栏不包含正在看的这一条，并且链到视频页", async () => {
+    setFixture(VIDEO_FIXTURE);
+    const world = makeWorld("https://www.bilibili.com/video/BVSP21", {
+      viewOwner: { mid: 2, name: "影视飓风", bvid: "BVSP21" },
+    });
+
+    await start(world.env);
+
+    const links = [
+      ...document.querySelectorAll("#follows-up-videos a[data-bvid]"),
+    ];
+    expect(links.map((node) => node.getAttribute("data-bvid"))).toEqual([
+      "BVSP22",
+    ]);
+    expect(links[0]?.getAttribute("href")).toBe(
+      "https://www.bilibili.com/video/BVSP22",
+    );
+  });
+
+  it("首页时间把秒级 pub_ts 换成毫秒，而不是 1970 附近的误读", async () => {
+    const seconds = 1_700_000_002;
+    const world = makeWorld("https://www.bilibili.com/", {
+      feedAll: [
+        rawArchive("d1", "BVUP3", "何同学的新视频", 3, "何同学", seconds),
+      ],
+      feedAllOffset: "",
+    });
+
+    await start(world.env);
+
+    const time = document.querySelector("#follows-root time");
+    expect(time?.dateTime).toBe("2023-11-14T22:13:22.000Z");
+    expect(time?.dateTime).not.toBe(new Date(seconds).toISOString());
+  });
+
+  it("视频作者解析失败时留在空白页", async () => {
+    setFixture(VIDEO_FIXTURE);
+    const world = makeWorld("https://www.bilibili.com/video/BV1xx");
+    const original = world.fetchMock.getMockImplementation();
+    world.fetchMock.mockImplementation(async (input: unknown, init?: unknown) => {
+      const url = String(input);
+      if (url.includes("/x/web-interface/view")) {
+        return { json: async () => ({ code: 0, data: {} }) };
+      }
+      return original!(input, init);
+    });
+
+    await expect(start(world.env)).rejects.toThrow(/video owner unavailable/);
+    expect(document.querySelector("video")).toBeNull();
+    expect(document.querySelector("#reco_list")).toBeNull();
+    expect(
+      document.documentElement.classList.contains("follows-only-covered"),
+    ).toBe(true);
+  });
 });
+
+function holdFirstFetch(
+  fetchMock: ReturnType<typeof vi.fn>,
+): () => void {
+  const original = fetchMock.getMockImplementation();
+  if (original === undefined) {
+    throw new Error("missing fetch implementation");
+  }
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  fetchMock.mockImplementation(async (input: unknown, init?: unknown) => {
+    if (first) {
+      first = false;
+      await gate;
+    }
+    return original(input, init);
+  });
+  return () => release();
+}
 
 describe("extension manifest", () => {
   type Manifest = {
@@ -587,7 +898,32 @@ describe("extension manifest", () => {
     expect(
       (script?.matches ?? []).some((match) => match.includes("b23.tv")),
     ).toBe(false);
-    expect(script?.js).toContain("dist/content.js");
+    expect(script?.js).toEqual(["content.js"]);
+  });
+
+  it("清单里的脚本路径相对 manifest 能落到打包后的经典脚本", () => {
+    const scriptPath = manifest.content_scripts[0]?.js?.[0];
+    expect(scriptPath).toBe("content.js");
+    const manifestDir = path.resolve("extension");
+    const resolved = path.resolve(manifestDir, scriptPath ?? "");
+    expect(path.relative(manifestDir, resolved)).toBe("content.js");
+    expect(resolved.includes(`${path.sep}dist${path.sep}`)).toBe(false);
+    expect(existsSync(resolved)).toBe(true);
+
+    const source = readFileSync(resolved, "utf8");
+    const trimmed = source.trim();
+    expect(source).toMatch(/\(\(\)\s*=>\s*\{/);
+    expect(trimmed).toMatch(/\}\)\(\);$/);
+    expect(source).not.toMatch(/^\s*import[\s{]/m);
+    expect(source).not.toMatch(/^\s*export[\s{]/m);
+    expect(source).toContain('credentials: "include"');
+    expect(source).not.toContain("chrome.storage");
+    expect(source).not.toContain("chrome.cookies");
+  });
+
+  it("入口不等待 DOMContentLoaded", () => {
+    const source = readFileSync("src/content/main.ts", "utf8");
+    expect(source).not.toContain("DOMContentLoaded");
   });
 
   it("host_permissions 只有 bilibili 站点与 api", () => {

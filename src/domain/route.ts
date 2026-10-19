@@ -43,6 +43,9 @@ export function classifyUrl(href: string): PageClass {
         id: readMatch[1],
       };
     }
+    // www 上的合集播放地址（/medialist/play/...、/list/ml...）路径里没有 UP mid。
+    // 第一版不解析作者，归入 blocked，回到首页，避免打不开作者时露出推荐。
+    // 空间站的 /<mid>/lists 与 /<mid>/lists/<id> 在下面单独识别。
     return { kind: "blocked" };
   }
 
@@ -66,6 +69,15 @@ export function classifyUrl(href: string): PageClass {
         kind: "work",
         work: "article",
         mid: Number(articleMatch[1]),
+        id: "",
+      };
+    }
+    const listsIndexMatch = path.match(/^\/(\d+)\/lists$/);
+    if (listsIndexMatch) {
+      return {
+        kind: "work",
+        work: "collection",
+        mid: Number(listsIndexMatch[1]),
         id: "",
       };
     }

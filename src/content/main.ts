@@ -16,6 +16,7 @@ import {
   decideWork,
   videoChrome,
 } from "../domain/route.js";
+import type { PageClass } from "../domain/types.js";
 import {
   followUp,
   getSession,
@@ -35,13 +36,160 @@ export type PageEnv = {
   fetchImpl: typeof fetch;
   cookie: string;
   replace: (url: string) => void;
+  reload: () => void;
 };
 
 const HOME_URL = "https://www.bilibili.com/";
 const PAGE_SIZE = 20;
+const COVER_STYLE_ID = "follows-only-cover-style";
+const COVER_ID = "follows-only-cover";
+const LOGIN_ID = "follows-login";
+const ROOT_ID = "follows-root";
 
 /** 请求上限:防止接口异常(total 异常增大)时无限翻页。 */
 const FOLLOWINGS_MAX_PAGES = 100;
+/** 单次凑满一页时最多再向服务器要多少次,避免坏游标死循环。 */
+const SUBMISSION_MAX_FETCHES = 20;
+
+const COVER_CSS = [
+  "html.follows-only-covered{background:#fff!important}",
+  `html.follows-only-covered body>*:not(#${COVER_ID}):not(#${ROOT_ID}):not(#${LOGIN_ID}){display:none!important}`,
+  `#${COVER_ID}{position:fixed;inset:0;z-index:2147483647;background:#fff}`,
+].join("");
+
+export type SubmissionCursor = {
+  serverOffset: string | null;
+  pending: Submission[];
+  emitted: string[];
+  serverExhausted: boolean;
+};
+
+type LoadedSubmissions = { items: Submission[]; cursor: SubmissionCursor };
+
+type EraseWatch = { active: boolean; observer: MutationObserver };
+
+const eraseWatchers = new WeakMap<Document, EraseWatch>();
+
+function shouldConceal(page: PageClass): boolean {
+  return page.kind !== "native" && page.kind !== "login";
+}
+
+function shouldEraseStock(page: PageClass): boolean {
+  if (page.kind === "home" || page.kind === "blocked") {
+    return true;
+  }
+  if (page.kind === "work" && page.work === "space") {
+    return true;
+  }
+  return false;
+}
+
+function eraseStockNodes(document: Document): void {
+  const body = document.body;
+  if (body === null) {
+    return;
+  }
+  for (const child of Array.from(body.children)) {
+    if (child.id === COVER_ID || child.id === ROOT_ID || child.id === LOGIN_ID) {
+      continue;
+    }
+    child.remove();
+  }
+}
+
+function ensureCoverElement(document: Document): void {
+  if (document.body === null || document.getElementById(COVER_ID) !== null) {
+    return;
+  }
+  const cover = document.createElement("div");
+  cover.id = COVER_ID;
+  document.body.appendChild(cover);
+}
+
+function watchErase(document: Document): void {
+  if (eraseWatchers.has(document) || typeof MutationObserver === "undefined") {
+    return;
+  }
+  const watch: EraseWatch = { active: true, observer: undefined as unknown as MutationObserver };
+  watch.observer = new MutationObserver(() => {
+    if (!watch.active) {
+      return;
+    }
+    if (!document.documentElement.classList.contains("follows-only-covered")) {
+      return;
+    }
+    eraseStockNodes(document);
+    ensureCoverElement(document);
+  });
+  watch.observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+  eraseWatchers.set(document, watch);
+}
+
+function stopEraseWatch(document: Document): void {
+  const watch = eraseWatchers.get(document);
+  if (watch === undefined) {
+    return;
+  }
+  watch.active = false;
+  watch.observer.disconnect();
+  eraseWatchers.delete(document);
+}
+
+function conceal(document: Document, erase: boolean): void {
+  const root = document.documentElement;
+  root.classList.add("follows-only-covered");
+  if (document.getElementById(COVER_STYLE_ID) === null) {
+    const style = document.createElement("style");
+    style.id = COVER_STYLE_ID;
+    style.textContent = COVER_CSS;
+    (document.head ?? root).appendChild(style);
+  }
+  if (erase) {
+    eraseStockNodes(document);
+    watchErase(document);
+  }
+  ensureCoverElement(document);
+}
+
+/** document_start 同步调用:非原生页立刻盖住,且在任何 await 之前。 */
+export function prepareDocument(document: Document, href: string): void {
+  const page = classifyUrl(href);
+  if (!shouldConceal(page)) {
+    return;
+  }
+  conceal(document, shouldEraseStock(page));
+}
+
+export function revealDocument(document: Document): void {
+  stopEraseWatch(document);
+  document.documentElement.classList.remove("follows-only-covered");
+  document.getElementById(COVER_STYLE_ID)?.remove();
+  document.getElementById(COVER_ID)?.remove();
+}
+
+/** 测试之间卸掉遮罩和观察器，避免上一页的接管清掉下一页的夹具。 */
+export function resetPageRuntime(document: Document): void {
+  stopLateDomWatch(document);
+  revealDocument(document);
+}
+
+function holdBlank(document: Document): void {
+  stopEraseWatch(document);
+  const body = document.body;
+  if (body !== null) {
+    while (body.firstChild !== null) {
+      body.removeChild(body.firstChild);
+    }
+  }
+  conceal(document, true);
+}
+
+export function hasMoreSubmissions(cursor: SubmissionCursor): boolean {
+  return cursor.pending.length > 0 || !cursor.serverExhausted;
+}
 
 export async function loadFollowings(
   mid: number,
@@ -62,27 +210,86 @@ export async function loadFollowings(
   return items;
 }
 
-type LoadedSubmissions = { items: Submission[]; nextOffset: string | null };
-
 export async function loadSubmissions(
   mode: { scope: "all" } | { scope: "up"; mid: number },
-  offset: string | null,
+  cursor: SubmissionCursor | null,
   fetchImpl: typeof fetch,
 ): Promise<LoadedSubmissions> {
-  const response =
-    mode.scope === "all"
-      ? await listAllSubmissions(offset, fetchImpl)
-      : await listUpSubmissions(mode.mid, offset, fetchImpl);
-  const items = newestFirst(
-    collapseParts(onlySubmissions(response.items)),
-  ).slice(0, PAGE_SIZE);
-  return { items, nextOffset: response.nextOffset };
+  const pending = [...(cursor?.pending ?? [])];
+  const emitted = new Set(cursor?.emitted ?? []);
+  const seen = new Set<string>([
+    ...emitted,
+    ...pending.map((item) => item.bvid),
+  ]);
+  let serverOffset = cursor?.serverOffset ?? null;
+  let serverExhausted = cursor?.serverExhausted ?? false;
+  let fetches = 0;
+
+  while (pending.length < PAGE_SIZE && !serverExhausted) {
+    if (fetches >= SUBMISSION_MAX_FETCHES) {
+      break;
+    }
+    fetches += 1;
+    const requestedOffset = serverOffset;
+    const response =
+      mode.scope === "all"
+        ? await listAllSubmissions(requestedOffset, fetchImpl)
+        : await listUpSubmissions(mode.mid, requestedOffset, fetchImpl);
+
+    let added = 0;
+    for (const item of onlySubmissions(response.items)) {
+      if (item.bvid === "" || seen.has(item.bvid)) {
+        continue;
+      }
+      seen.add(item.bvid);
+      pending.push(item);
+      added += 1;
+    }
+
+    const nextOffset = response.nextOffset;
+    if (nextOffset === null || response.items.length === 0) {
+      serverExhausted = true;
+    } else if (added === 0 && nextOffset === requestedOffset) {
+      serverExhausted = true;
+    } else {
+      serverOffset = nextOffset;
+    }
+  }
+
+  const ordered = newestFirst(pending);
+  const items = ordered.slice(0, PAGE_SIZE);
+  const rest = ordered.slice(PAGE_SIZE);
+  for (const item of items) {
+    emitted.add(item.bvid);
+  }
+
+  return {
+    items,
+    cursor: {
+      serverOffset,
+      pending: rest,
+      emitted: [...emitted],
+      serverExhausted,
+    },
+  };
 }
 
 export async function start(env: PageEnv): Promise<void> {
-  stopLateDomWatch(env.document);
-
   const page = classifyUrl(env.href);
+  prepareDocument(env.document, env.href);
+  stopLateDomWatch(env.document);
+  if (page.kind === "login") {
+    return;
+  }
+  try {
+    await dispatch(env, page);
+  } catch (error) {
+    holdBlank(env.document);
+    throw error;
+  }
+}
+
+async function dispatch(env: PageEnv, page: PageClass): Promise<void> {
   const session = await getSession(env.fetchImpl);
 
   let followings: Following[] = [];
@@ -112,7 +319,7 @@ export async function start(env: PageEnv): Promise<void> {
       promptLogin(env);
       return;
     case "redirect-home":
-      env.replace(HOME_URL);
+      redirectHome(env);
       return;
     case "show-home":
       await ensureFollowState();
@@ -125,6 +332,7 @@ export async function start(env: PageEnv): Promise<void> {
     case "native-stripped":
     case "work-stripped":
       applyWatch(env, "native", []);
+      revealDocument(env.document);
       return;
     case "resolve-work": {
       const author = await getWorkAuthor(
@@ -136,9 +344,10 @@ export async function start(env: PageEnv): Promise<void> {
       const outcome = decideWork(followed.has(author.mid));
       if (outcome === "work-stripped") {
         applyWatch(env, "native", []);
+        revealDocument(env.document);
         return;
       }
-      env.replace(HOME_URL);
+      redirectHome(env);
       return;
     }
     case "video":
@@ -150,6 +359,9 @@ export async function start(env: PageEnv): Promise<void> {
 
 function clearBody(document: Document): void {
   const body = document.body;
+  if (body === null) {
+    return;
+  }
   while (body.firstChild !== null) {
     body.removeChild(body.firstChild);
   }
@@ -157,10 +369,19 @@ function clearBody(document: Document): void {
 
 function promptLogin(env: PageEnv): void {
   clearBody(env.document);
+  const box = env.document.createElement("div");
+  box.id = LOGIN_ID;
   const link = env.document.createElement("a");
   link.href = "https://passport.bilibili.com/login";
   link.textContent = "登录 B 站";
-  env.document.body.appendChild(link);
+  box.appendChild(link);
+  env.document.body.appendChild(box);
+  revealDocument(env.document);
+}
+
+function redirectHome(env: PageEnv): void {
+  holdBlank(env.document);
+  env.replace(HOME_URL);
 }
 
 function navigate(env: PageEnv, url: string): void {
@@ -171,6 +392,19 @@ function navigate(env: PageEnv, url: string): void {
   location.href = url;
 }
 
+type FeedSlot = {
+  items: Submission[];
+  cursor: SubmissionCursor;
+};
+
+async function loadFeedSlot(
+  env: PageEnv,
+  mode: { scope: "all" } | { scope: "up"; mid: number },
+): Promise<FeedSlot> {
+  const page = await loadSubmissions(mode, null, env.fetchImpl);
+  return { items: page.items, cursor: page.cursor };
+}
+
 async function runHome(
   env: PageEnv,
   followings: Following[],
@@ -178,33 +412,61 @@ async function runHome(
 ): Promise<void> {
   clearBody(env.document);
   const root = env.document.createElement("div");
+  root.id = ROOT_ID;
   env.document.body.appendChild(root);
 
-  let submissions: Submission[] = [];
-  let nextOffset: string | null = null;
-  let loadingMore = false;
+  const upSlots = new Map<number, FeedSlot>();
+  const allPromise = loadFeedSlot(env, { scope: "all" });
+  const upPromise =
+    selectedMid === null
+      ? null
+      : loadFeedSlot(env, { scope: "up", mid: selectedMid });
+  const allSlot = await allPromise;
+  if (selectedMid !== null && upPromise !== null) {
+    upSlots.set(selectedMid, await upPromise);
+  }
 
-  const firstPage = await loadSubmissions(
-    { scope: "all" },
-    null,
-    env.fetchImpl,
-  );
-  submissions = firstPage.items;
-  nextOffset = firstPage.nextOffset;
+  let currentMid = selectedMid;
+  let loadingMore = false;
+  let selectionToken = 0;
+
+  // 侧栏顺序只用已经拿到的「全部更新」页,再加上当前选中 UP 的已加载投稿。
+  // 这样点进某个人时不会把他挤到最后,也不会为了排序把动态翻完。
+  // 某一页被一个 UP 占满时,没出现在已加载页里的人仍按关注列表原顺序排在后面。
+  function rankingSubmissions(): Submission[] {
+    const selected =
+      currentMid === null ? [] : (upSlots.get(currentMid)?.items ?? []);
+    return [...allSlot.items, ...selected];
+  }
+
+  function currentSlot(): FeedSlot | null {
+    if (currentMid === null) {
+      return allSlot;
+    }
+    return upSlots.get(currentMid) ?? null;
+  }
 
   async function loadMore(): Promise<void> {
-    if (loadingMore || nextOffset === null) {
+    if (loadingMore) {
+      return;
+    }
+    const mid = currentMid;
+    const slot = currentSlot();
+    if (slot === null || !hasMoreSubmissions(slot.cursor)) {
       return;
     }
     loadingMore = true;
     try {
-      const page = await loadSubmissions(
-        { scope: "all" },
-        nextOffset,
-        env.fetchImpl,
-      );
-      submissions = newestFirst(collapseParts([...submissions, ...page.items]));
-      nextOffset = page.nextOffset;
+      const mode =
+        mid === null
+          ? ({ scope: "all" } as const)
+          : ({ scope: "up", mid } as const);
+      const page = await loadSubmissions(mode, slot.cursor, env.fetchImpl);
+      if (mid !== currentMid) {
+        return;
+      }
+      slot.items = newestFirst(collapseParts([...slot.items, ...page.items]));
+      slot.cursor = page.cursor;
       render();
     } finally {
       loadingMore = false;
@@ -212,16 +474,34 @@ async function runHome(
   }
 
   function render(): void {
+    const slot = currentSlot();
     const state: HomeState = {
-      followings: orderFollowings(followings, submissions),
-      submissions,
-      selectedMid,
-      hasMore: nextOffset !== null,
+      followings: orderFollowings(followings, rankingSubmissions()),
+      submissions: slot?.items ?? [],
+      selectedMid: currentMid,
+      hasMore: slot !== null && hasMoreSubmissions(slot.cursor),
     };
     renderHome(root, state, {
       onSelect(mid: number | null): void {
-        selectedMid = mid;
+        currentMid = mid;
+        const token = ++selectionToken;
+        if (mid === null || upSlots.has(mid)) {
+          render();
+          return;
+        }
         render();
+        void (async () => {
+          try {
+            const loaded = await loadFeedSlot(env, { scope: "up", mid });
+            if (token !== selectionToken) {
+              return;
+            }
+            upSlots.set(mid, loaded);
+            render();
+          } catch {
+            // 选人失败时留在插件自己的页面里,不恢复 B 站原页面。
+          }
+        })();
       },
       onOpenVideo(bvid: string): void {
         navigate(env, `https://www.bilibili.com/video/${bvid}`);
@@ -233,6 +513,7 @@ async function runHome(
   }
 
   render();
+  revealDocument(env.document);
 }
 
 async function runVideo(
@@ -251,9 +532,13 @@ async function runVideo(
       null,
       env.fetchImpl,
     );
-    submissions = page.items;
+    const currentIds = new Set(
+      [videoId, owner.bvid].filter((id) => id !== ""),
+    );
+    submissions = page.items.filter((item) => !currentIds.has(item.bvid));
   }
   applyWatch(env, mode, submissions);
+  revealDocument(env.document);
 
   if (mode === "unfollowed") {
     wireFollowButton(env, owner.mid);
@@ -282,14 +567,7 @@ async function followOwnerFromPage(
     showFollowError(env.document, button);
     return;
   }
-  env.document.querySelector('[data-role="follow-error"]')?.remove();
-  button.remove();
-  const page = await loadSubmissions(
-    { scope: "up", mid: ownerMid },
-    null,
-    env.fetchImpl,
-  );
-  applyWatch(env, "followed", page.items);
+  env.reload();
 }
 
 function showFollowError(document: Document, button: Element): void {
@@ -366,8 +644,8 @@ function inTestHarness(): boolean {
   return frame.happyDOM !== undefined;
 }
 
-function boot(): void {
-  void start({
+function browserEnv(): PageEnv {
+  return {
     href: window.location.href,
     document: window.document,
     fetchImpl: window.fetch.bind(window),
@@ -375,19 +653,22 @@ function boot(): void {
     replace(url: string): void {
       window.location.replace(url);
     },
+    reload(): void {
+      window.location.reload();
+    },
+  };
+}
+
+function boot(): void {
+  const env = browserEnv();
+  prepareDocument(env.document, env.href);
+  void start(env).catch(() => {
+    if (classifyUrl(env.href).kind !== "login") {
+      holdBlank(env.document);
+    }
   });
 }
 
 if (!inTestHarness()) {
-  if (window.document.readyState === "loading") {
-    window.document.addEventListener(
-      "DOMContentLoaded",
-      () => {
-        boot();
-      },
-      { once: true },
-    );
-  } else {
-    boot();
-  }
+  boot();
 }

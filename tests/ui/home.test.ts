@@ -108,10 +108,20 @@ describe("renderHome", () => {
       expect(card).not.toBeNull();
       expect(card?.textContent).toContain(submission.title);
       expect(card?.textContent).toContain(submission.authorName);
-      expect(card?.textContent).toContain(
+      const time = card?.querySelector("time");
+      expect(time?.textContent).toBe(
         new Date(submission.publishedAt).toLocaleString(),
       );
+      expect(time?.dateTime).toBe(
+        new Date(submission.publishedAt).toISOString(),
+      );
     }
+    expect(root.querySelector('[data-bvid="BV1"] time')?.dateTime).toBe(
+      "2023-11-14T22:13:22.000Z",
+    );
+    expect(root.querySelector('[data-bvid="BV1"] time')?.dateTime).not.toBe(
+      new Date(1_700_000_002).toISOString(),
+    );
 
     expect(root.textContent).not.toContain("专栏");
   });

@@ -91,7 +91,7 @@ export function parseDynamics(body: unknown): {
       majorType,
       authorMid: asNumber(author?.mid) ?? 0,
       authorName: asString(author?.name) ?? "",
-      publishedAt: asNumber(author?.pub_ts) ?? 0,
+      publishedAt: (asNumber(author?.pub_ts) ?? 0) * 1000,
     };
     if (majorType === "archive") {
       const archive = asRecord(major?.archive);
@@ -113,11 +113,19 @@ export function parseDynamics(body: unknown): {
   return { items, nextOffset: offset !== null && offset !== "" ? offset : null };
 }
 
-export function parseViewOwner(body: unknown): { mid: number; name: string } {
-  const owner = asRecord(dataOf(body)?.owner);
+export function parseViewOwner(
+  body: unknown,
+): { mid: number; name: string; bvid: string } | null {
+  const data = dataOf(body);
+  const owner = asRecord(data?.owner);
+  const mid = asNumber(owner?.mid);
+  if (owner === null || mid === null || mid <= 0) {
+    return null;
+  }
   return {
-    mid: asNumber(owner?.mid) ?? 0,
-    name: asString(owner?.name) ?? "",
+    mid,
+    name: asString(owner.name) ?? "",
+    bvid: asString(data?.bvid) ?? "",
   };
 }
 
@@ -175,17 +183,21 @@ export async function listUpSubmissions(
 export async function getVideoOwner(
   id: string,
   fetchImpl: typeof fetch,
-): Promise<{ mid: number; name: string }> {
+): Promise<{ mid: number; name: string; bvid: string }> {
   const aidMatch = id.match(/^av(\d+)$/i);
   const query = aidMatch
     ? `aid=${aidMatch[1]}`
     : `bvid=${encodeURIComponent(id)}`;
-  return parseViewOwner(
+  const owner = parseViewOwner(
     await fetchJson(
       `https://api.bilibili.com/x/web-interface/view?${query}`,
       fetchImpl,
     ),
   );
+  if (owner === null) {
+    throw new Error("video owner unavailable");
+  }
+  return owner;
 }
 
 export async function getWorkAuthor(

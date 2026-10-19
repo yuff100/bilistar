@@ -112,7 +112,9 @@ export function renderHome(
       const author = document.createElement("span");
       author.textContent = submission.authorName;
       const time = document.createElement("time");
-      time.textContent = new Date(submission.publishedAt).toLocaleString();
+      const published = new Date(submission.publishedAt);
+      time.dateTime = published.toISOString();
+      time.textContent = published.toLocaleString();
 
       card.appendChild(title);
       card.appendChild(author);

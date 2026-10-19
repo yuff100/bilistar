@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Submission } from "../../src/domain/feed.js";
 import {
   applyWatchPolicy,
@@ -106,7 +106,27 @@ describe("applyWatchPolicy", () => {
     submissions.forEach((submission, index) => {
       expect(items[index].getAttribute("data-bvid")).toBe(submission.bvid);
       expect(items[index].textContent).toContain(submission.title);
+      expect(items[index].getAttribute("href")).toBe(
+        `https://www.bilibili.com/video/${submission.bvid}`,
+      );
     });
+  });
+
+  it("followed: ended 事件在捕获阶段被拦住,播放器上的连播监听不会执行", () => {
+    buildWatchDocument();
+    const video = document.querySelector("video") as HTMLVideoElement;
+    let reachedPlayer = false;
+    video.addEventListener("ended", () => {
+      reachedPlayer = true;
+    });
+    const pause = vi.spyOn(video, "pause");
+
+    applyWatchPolicy(document, "followed", submissions);
+    video.dispatchEvent(new Event("ended", { bubbles: true, cancelable: true }));
+
+    expect(endingAutoplayAllowed()).toBe(false);
+    expect(reachedPlayer).toBe(false);
+    expect(pause).toHaveBeenCalled();
   });
 
   it("followed: removes the ending wrap again when re-applied after the player injects it, without duplicating chrome", () => {

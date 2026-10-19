@@ -34,9 +34,33 @@ export const REMOVE_SELECTORS: {
 };
 
 const BACK_HOME_HREF = "https://www.bilibili.com/";
+const autoplayGuarded = new WeakSet<Document>();
 
 export function endingAutoplayAllowed(): false {
   return false;
+}
+
+function installEndingAutoplayGuard(document: Document): void {
+  if (autoplayGuarded.has(document) || endingAutoplayAllowed()) {
+    return;
+  }
+  autoplayGuarded.add(document);
+  document.addEventListener(
+    "ended",
+    (event) => {
+      if (endingAutoplayAllowed()) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof HTMLMediaElement)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      target.pause();
+    },
+    true,
+  );
 }
 
 function removeMatching(document: Document, selectors: string[]): void {
@@ -70,8 +94,11 @@ function ensureUpVideosSidebar(
   const list = document.createElement("ul");
   for (const submission of submissions) {
     const item = document.createElement("li");
-    item.setAttribute("data-bvid", submission.bvid);
-    item.textContent = submission.title;
+    const link = document.createElement("a");
+    link.href = `https://www.bilibili.com/video/${submission.bvid}`;
+    link.setAttribute("data-bvid", submission.bvid);
+    link.textContent = submission.title;
+    item.appendChild(link);
     list.appendChild(item);
   }
   aside.appendChild(list);
@@ -99,7 +126,9 @@ export function applyWatchPolicy(
   if (mode === "followed") {
     ensureBackHomeLink(document);
     ensureUpVideosSidebar(document, submissions);
+    installEndingAutoplayGuard(document);
   } else if (mode === "unfollowed") {
     ensureFollowButton(document);
+    installEndingAutoplayGuard(document);
   }
 }
