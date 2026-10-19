@@ -2,9 +2,11 @@
   "name": "bilibili-follows-only",
   "private": true,
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "tsc src/content/main.ts --target ES2022 --module ES2022 --moduleResolution bundler --strict --skipLibCheck --isolatedModules --esModuleInterop --outDir dist && node -e \"require('fs').copyFileSync('dist/content/main.js', 'dist/content.js')\""
   },
   "devDependencies": {
+    "@types/node": "^26.6.5",
     "happy-dom": "^17.4.4",
     "typescript": "^5.8.3",
     "vitest": "^3.1.1"
