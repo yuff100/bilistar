@@ -1,0 +1,12 @@
+{
+  "name": "bilibili-follows-only",
+  "private": true,
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "happy-dom": "^17.4.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.1"
+  }
+}
