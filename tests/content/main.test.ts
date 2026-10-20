@@ -454,8 +454,11 @@ describe("start", () => {
 
     await start(world.env);
 
-    const scrolling = document.scrollingElement ?? document.documentElement;
-    scrolling.scrollTop = 480;
+    const feedMain = document.querySelector(
+      "#follows-root main",
+    ) as HTMLElement | null;
+    expect(feedMain).not.toBeNull();
+    feedMain!.scrollTop = 480;
 
     const more = document.querySelector(
       "#follows-root main button",
@@ -463,7 +466,7 @@ describe("start", () => {
     more?.click();
     await settle();
 
-    expect(scrolling.scrollTop).toBe(480);
+    expect(feedMain!.scrollTop).toBe(480);
   });
 
   it("切换 UP 后滚动回到顶部", async () => {
@@ -471,8 +474,11 @@ describe("start", () => {
 
     await start(world.env);
 
-    const scrolling = document.scrollingElement ?? document.documentElement;
-    scrolling.scrollTop = 480;
+    const feedMain = document.querySelector(
+      "#follows-root main",
+    ) as HTMLElement | null;
+    expect(feedMain).not.toBeNull();
+    feedMain!.scrollTop = 480;
 
     const upItem = [...document.querySelectorAll("#follows-root nav li")].find(
       (li) => li.textContent === "何同学",
@@ -480,7 +486,11 @@ describe("start", () => {
     upItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await settle();
 
-    expect(scrolling.scrollTop).toBe(0);
+    const feedMainAfter = document.querySelector(
+      "#follows-root main",
+    ) as HTMLElement | null;
+    expect(feedMainAfter).not.toBeNull();
+    expect(feedMainAfter!.scrollTop).toBe(0);
   });
 
   it("已关注的空间页变成首页且只显示这个 UP 的投稿", async () => {

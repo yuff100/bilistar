@@ -1001,13 +1001,23 @@
         loadingMore = false;
       }
     }
+    function scrollContainer() {
+      const main = root.querySelector("main");
+      if (main !== null) {
+        return main;
+      }
+      return env.document.scrollingElement;
+    }
     function readScrollTop() {
-      const scrolling = env.document.scrollingElement;
-      return scrolling?.scrollTop ?? env.document.defaultView?.scrollY ?? 0;
+      const scrolling = scrollContainer();
+      if (scrolling instanceof HTMLElement) {
+        return scrolling.scrollTop;
+      }
+      return env.document.defaultView?.scrollY ?? 0;
     }
     function restoreScrollTop(y) {
-      const scrolling = env.document.scrollingElement;
-      if (scrolling) {
+      const scrolling = scrollContainer();
+      if (scrolling instanceof HTMLElement) {
         scrolling.scrollTop = y;
         return;
       }
