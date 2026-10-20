@@ -163,6 +163,15 @@ function setFixture(html: string): void {
   document.body.innerHTML = html;
 }
 
+function moreButton(): HTMLButtonElement | null {
+  const buttons = [...document.querySelectorAll("#follows-root main button")];
+  return (
+    (buttons.find((button) => button.textContent === "继续看") as
+      | HTMLButtonElement
+      | undefined) ?? null
+  );
+}
+
 async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 5));
 }
@@ -396,14 +405,42 @@ describe("start", () => {
     expect(cards).toEqual(["BVUP3", "BVUP2"]);
   });
 
-  it("首页点投稿卡片时把地址设为视频页", async () => {
+  it("首页点投稿卡片时在右侧窗格内嵌播放，不离开首页", async () => {
     const world = makeWorld("https://www.bilibili.com/");
 
     await start(world.env);
 
+    const before = document.location.href;
     document
       .querySelector('[data-bvid="BVUP2"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(document.location.href).toBe(before);
+    const frame = document.querySelector(
+      "#follows-root aside iframe",
+    ) as HTMLIFrameElement | null;
+    expect(frame).not.toBeNull();
+    expect(frame?.getAttribute("src")).toBe(
+      "https://player.bilibili.com/player.html?bvid=BVUP2&autoplay=1&danmaku=1",
+    );
+    expect(frame?.hasAttribute("allowfullscreen")).toBe(true);
+  });
+
+  it("点播放窗里的「在 B 站打开」才去视频页", async () => {
+    const world = makeWorld("https://www.bilibili.com/");
+
+    await start(world.env);
+
+    (document.querySelector('[data-bvid="BVUP2"]') as HTMLElement).click();
+    const open = [...document.querySelectorAll("#follows-root aside a")].find(
+      (link) => link.textContent === "在 B 站打开",
+    ) as HTMLAnchorElement | undefined;
+    expect(open).toBeDefined();
+    expect(open?.getAttribute("href")).toBe(
+      "https://www.bilibili.com/video/BVUP2",
+    );
+
+    (open as HTMLAnchorElement).click();
 
     expect(document.location.href).toBe("https://www.bilibili.com/video/BVUP2");
   });
@@ -422,10 +459,8 @@ describe("start", () => {
     expect(
       document.querySelectorAll("#follows-root main [data-bvid]").length,
     ).toBe(20);
-    const more = document.querySelector(
-      "#follows-root main button",
-    ) as HTMLButtonElement | null;
-    expect(more?.textContent).toBe("继续看");
+    const more = moreButton();
+    expect(more).not.toBeNull();
 
     more?.click();
     await settle();
@@ -460,10 +495,7 @@ describe("start", () => {
     expect(feedMain).not.toBeNull();
     feedMain!.scrollTop = 480;
 
-    const more = document.querySelector(
-      "#follows-root main button",
-    ) as HTMLButtonElement | null;
-    more?.click();
+    moreButton()?.click();
     await settle();
 
     expect(feedMain!.scrollTop).toBe(480);
@@ -799,10 +831,8 @@ describe("start", () => {
     expect(spaceCalls()).toHaveLength(1);
     expect(String(spaceCalls()[0][0])).toContain("host_mid=2");
 
-    const more = document.querySelector(
-      "#follows-root main button",
-    ) as HTMLButtonElement;
-    expect(more.textContent).toBe("继续看");
+    const more = moreButton() as HTMLButtonElement;
+    expect(more).not.toBeNull();
     more.click();
     await settle();
 

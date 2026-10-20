@@ -429,6 +429,7 @@ async function runHome(
   }
 
   let currentMid = selectedMid;
+  let playingBvid: string | null = null;
   let loadingMore = false;
   let selectionToken = 0;
 
@@ -509,6 +510,7 @@ async function runHome(
       submissions: slot?.items ?? [],
       selectedMid: currentMid,
       hasMore: slot !== null && hasMoreSubmissions(slot.cursor),
+      playingBvid,
     };
     renderHome(root, state, {
       onSelect(mid: number | null): void {
@@ -534,6 +536,10 @@ async function runHome(
       },
       onOpenVideo(bvid: string): void {
         navigate(env, `https://www.bilibili.com/video/${bvid}`);
+      },
+      onPlay(bvid: string): void {
+        playingBvid = bvid;
+        render({ preserveScroll: true });
       },
       onLoadMore(): void {
         void loadMore();

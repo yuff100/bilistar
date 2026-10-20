@@ -377,14 +377,23 @@
   var HOME_CSS = [
     `#follows-root{position:fixed;inset:0;display:flex;background:#f6f7f8;color:#18191c;font-size:14px;line-height:1.5;font-family:${FONT_STACK}}`,
     `#follows-root *{box-sizing:border-box}`,
+    `#follows-root [hidden]{display:none}`,
     `#follows-root>nav{width:200px;flex:none;height:100%;overflow-y:auto;background:#fff;border-right:1px solid #e3e5e7;padding:16px 12px}`,
-    `#follows-root>nav h1{margin:0 8px 12px;font-size:16px;font-weight:700;color:#18191c}`,
+    `#follows-root>nav>header{display:flex;align-items:center;justify-content:space-between;margin:0 8px 12px}`,
+    `#follows-root>nav h1{margin:0;font-size:16px;font-weight:700;color:#18191c}`,
     `#follows-root>nav ul{list-style:none;margin:0;padding:0}`,
     `#follows-root>nav li[data-follows],#follows-root>nav li[data-follows-mid]{padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#18191c}`,
     `#follows-root>nav li[data-follows]:hover,#follows-root>nav li[data-follows-mid]:hover{background:#f6f7f8}`,
     `#follows-root>nav li[aria-current]{background:#fff0f4;color:#fb7299;font-weight:600}`,
     `#follows-root>nav li[aria-current]:hover{background:#fff0f4}`,
-    `#follows-root>main{flex:1;height:100%;overflow-y:auto;padding:20px 24px}`,
+    `#follows-root [data-action="collapse-left"],#follows-root [data-action="collapse-mid"]{flex:none;width:22px;height:22px;margin:0;padding:0;border:1px solid #e3e5e7;border-radius:6px;background:#fff;color:#9499a0;font-size:13px;line-height:1;cursor:pointer}`,
+    `#follows-root [data-action="collapse-left"]:hover,#follows-root [data-action="collapse-mid"]:hover{color:#fb7299;border-color:#fb7299}`,
+    `#follows-root>button[data-action="restore-left"],#follows-root>button[data-action="restore-mid"]{width:20px;flex:none;padding:0;border:none;background:#fff;color:#fb7299;font-size:14px;cursor:pointer}`,
+    `#follows-root>button[data-action="restore-left"]{border-right:1px solid #e3e5e7}`,
+    `#follows-root>button[data-action="restore-mid"]{border-left:1px solid #e3e5e7}`,
+    `#follows-root>button[data-action="restore-left"]:hover,#follows-root>button[data-action="restore-mid"]:hover{background:#fff0f4}`,
+    `#follows-root>main{flex:1;min-width:0;height:100%;overflow-y:auto;padding:20px 24px}`,
+    `#follows-root>main>header{display:flex;justify-content:flex-end;margin-bottom:8px}`,
     `#follows-root main nav{display:flex;gap:8px;margin-bottom:16px}`,
     `#follows-root main nav a{display:inline-block;padding:4px 12px;border-radius:999px;background:#fff;border:1px solid #e3e5e7;color:#61666d;font-size:13px;text-decoration:none}`,
     `#follows-root main nav a:hover{color:#fb7299;border-color:#fb7299}`,
@@ -396,7 +405,14 @@
     `#follows-root li[data-bvid] time{color:#9499a0;font-size:12px}`,
     `#follows-root main p{margin:0;padding:24px 0;color:#9499a0}`,
     `#follows-root main button{margin-top:16px;padding:8px 20px;border-radius:999px;border:1px solid #e3e5e7;background:#fff;color:#61666d;font-size:14px;cursor:pointer}`,
-    `#follows-root main button:hover{color:#fb7299;border-color:#fb7299}`
+    `#follows-root main button:hover{color:#fb7299;border-color:#fb7299}`,
+    `#follows-root>aside{width:280px;flex:none;height:100%;overflow-y:auto;background:#fff;border-left:1px solid #e3e5e7;padding:16px;display:flex;flex-direction:column;gap:12px}`,
+    `#follows-root>aside[data-playing]{width:480px}`,
+    `#follows-root>aside iframe{width:100%;aspect-ratio:16/9;border:none;border-radius:8px;background:#000}`,
+    `#follows-root>aside h2{margin:0;font-size:15px;font-weight:600;color:#18191c}`,
+    `#follows-root>aside p{margin:0;padding:24px 0;color:#9499a0}`,
+    `#follows-root>aside a{display:inline-block;align-self:flex-start;padding:6px 16px;border-radius:999px;background:#fb7299;color:#fff;text-decoration:none;font-size:13px}`,
+    `#follows-root>aside a:hover{background:#fc8bab}`
   ].join("");
   var LOGIN_CSS = [
     `#follows-login{position:fixed;inset:0;margin:auto;width:320px;height:180px;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid #e3e5e7;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.08);font-family:${FONT_STACK}}`,
@@ -437,6 +453,12 @@
     course: "\u8BFE\u7A0B",
     more: "\u7EE7\u7EED\u770B"
   };
+  var PLAYER_COPY = {
+    empty: "\u8FD8\u6CA1\u6709\u5728\u770B\u7684\u89C6\u9891",
+    openInBilibili: "\u5728 B \u7AD9\u6253\u5F00",
+    collapse: "\u2039",
+    restore: "\u203A"
+  };
   function workLinks(mid) {
     return [
       {
@@ -453,15 +475,56 @@
       }
     ];
   }
+  var paneCollapse = /* @__PURE__ */ new WeakMap();
+  function collapseOf(root) {
+    let state = paneCollapse.get(root);
+    if (state === void 0) {
+      state = { left: false, mid: false };
+      paneCollapse.set(root, state);
+    }
+    return state;
+  }
+  function embedUrl(bvid) {
+    return `https://player.bilibili.com/player.html?bvid=${bvid}&autoplay=1&danmaku=1`;
+  }
+  function videoUrl(bvid) {
+    return `https://www.bilibili.com/video/${bvid}`;
+  }
   function renderHome(root, state, handlers) {
     root.id = "follows-root";
     root.textContent = "";
-    const { followings, submissions, selectedMid, hasMore } = state;
+    const { followings, submissions, selectedMid, hasMore, playingBvid } = state;
+    const collapsed = collapseOf(root);
     ensureUiStyle(root.ownerDocument);
+    const restoreLeft = document.createElement("button");
+    restoreLeft.type = "button";
+    restoreLeft.dataset.action = "restore-left";
+    restoreLeft.textContent = PLAYER_COPY.restore;
+    restoreLeft.setAttribute("aria-label", "\u5C55\u5F00\u5173\u6CE8\u680F");
+    restoreLeft.hidden = !collapsed.left;
     const sidebar = document.createElement("nav");
+    sidebar.hidden = collapsed.left;
+    const sideHead = document.createElement("header");
     const heading = document.createElement("h1");
     heading.textContent = HOME_COPY.sidebar;
-    sidebar.appendChild(heading);
+    const collapseLeft = document.createElement("button");
+    collapseLeft.type = "button";
+    collapseLeft.dataset.action = "collapse-left";
+    collapseLeft.textContent = PLAYER_COPY.collapse;
+    collapseLeft.setAttribute("aria-label", "\u6536\u8D77\u5173\u6CE8\u680F");
+    collapseLeft.addEventListener("click", () => {
+      collapsed.left = true;
+      sidebar.hidden = true;
+      restoreLeft.hidden = false;
+    });
+    restoreLeft.addEventListener("click", () => {
+      collapsed.left = false;
+      sidebar.hidden = false;
+      restoreLeft.hidden = true;
+    });
+    sideHead.appendChild(heading);
+    sideHead.appendChild(collapseLeft);
+    sidebar.appendChild(sideHead);
     const followsList = document.createElement("ul");
     const allItem = document.createElement("li");
     allItem.textContent = HOME_COPY.all;
@@ -483,7 +546,33 @@
     }
     sidebar.appendChild(followsList);
     root.appendChild(sidebar);
+    root.appendChild(restoreLeft);
+    const restoreMid = document.createElement("button");
+    restoreMid.type = "button";
+    restoreMid.dataset.action = "restore-mid";
+    restoreMid.textContent = PLAYER_COPY.restore;
+    restoreMid.setAttribute("aria-label", "\u5C55\u5F00\u6295\u7A3F\u5217\u8868");
+    restoreMid.hidden = !collapsed.mid;
     const main = document.createElement("main");
+    main.hidden = collapsed.mid;
+    const mainHead = document.createElement("header");
+    const collapseMid = document.createElement("button");
+    collapseMid.type = "button";
+    collapseMid.dataset.action = "collapse-mid";
+    collapseMid.textContent = PLAYER_COPY.collapse;
+    collapseMid.setAttribute("aria-label", "\u6536\u8D77\u6295\u7A3F\u5217\u8868");
+    collapseMid.addEventListener("click", () => {
+      collapsed.mid = true;
+      main.hidden = true;
+      restoreMid.hidden = false;
+    });
+    restoreMid.addEventListener("click", () => {
+      collapsed.mid = false;
+      main.hidden = false;
+      restoreMid.hidden = true;
+    });
+    mainHead.appendChild(collapseMid);
+    main.appendChild(mainHead);
     if (selectedMid !== null) {
       const works = document.createElement("nav");
       for (const { text, href } of workLinks(selectedMid)) {
@@ -521,10 +610,7 @@
         card.appendChild(title);
         card.appendChild(author);
         card.appendChild(time);
-        card.addEventListener(
-          "click",
-          () => handlers.onOpenVideo(submission.bvid)
-        );
+        card.addEventListener("click", () => handlers.onPlay(submission.bvid));
         feed.appendChild(card);
       }
       main.appendChild(feed);
@@ -537,6 +623,34 @@
       main.appendChild(more);
     }
     root.appendChild(main);
+    root.appendChild(restoreMid);
+    const playerPane = document.createElement("aside");
+    if (playingBvid === null) {
+      const placeholder = document.createElement("p");
+      placeholder.textContent = PLAYER_COPY.empty;
+      playerPane.appendChild(placeholder);
+    } else {
+      playerPane.dataset.playing = "";
+      const frame = document.createElement("iframe");
+      frame.src = embedUrl(playingBvid);
+      frame.setAttribute("allowfullscreen", "");
+      playerPane.appendChild(frame);
+      const playing = submissions.find((item) => item.bvid === playingBvid);
+      if (playing !== void 0) {
+        const title = document.createElement("h2");
+        title.textContent = playing.title;
+        playerPane.appendChild(title);
+      }
+      const open = document.createElement("a");
+      open.href = videoUrl(playingBvid);
+      open.textContent = PLAYER_COPY.openInBilibili;
+      open.addEventListener("click", (event) => {
+        event.preventDefault();
+        handlers.onOpenVideo(playingBvid);
+      });
+      playerPane.appendChild(open);
+    }
+    root.appendChild(playerPane);
   }
 
   // src/ui/watch.ts
@@ -966,6 +1080,7 @@
       upSlots.set(selectedMid, await upPromise);
     }
     let currentMid = selectedMid;
+    let playingBvid = null;
     let loadingMore = false;
     let selectionToken = 0;
     function rankingSubmissions() {
@@ -1030,7 +1145,8 @@
         followings: orderFollowings(followings, rankingSubmissions()),
         submissions: slot?.items ?? [],
         selectedMid: currentMid,
-        hasMore: slot !== null && hasMoreSubmissions(slot.cursor)
+        hasMore: slot !== null && hasMoreSubmissions(slot.cursor),
+        playingBvid
       };
       renderHome(root, state, {
         onSelect(mid) {
@@ -1055,6 +1171,10 @@
         },
         onOpenVideo(bvid) {
           navigate(env, `https://www.bilibili.com/video/${bvid}`);
+        },
+        onPlay(bvid) {
+          playingBvid = bvid;
+          render({ preserveScroll: true });
         },
         onLoadMore() {
           void loadMore();
