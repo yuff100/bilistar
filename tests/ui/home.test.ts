@@ -70,6 +70,41 @@ function findButtonByText(root: HTMLElement, text: string) {
   );
 }
 
+// happy-dom 的 iframe.contentDocument 是 null(不支持浏览器的同源子文档),
+// 用 implementation.createHTMLDocument() 按 iframe 实例稳定地伪造一份,
+// 让注入逻辑走真实的 renderHome 代码路径;返回还原函数。
+function stubIframeDocuments(): () => void {
+  const docs = new WeakMap<HTMLIFrameElement, Document>();
+  const original = Object.getOwnPropertyDescriptor(
+    HTMLIFrameElement.prototype,
+    "contentDocument",
+  );
+  Object.defineProperty(HTMLIFrameElement.prototype, "contentDocument", {
+    configurable: true,
+    get(this: HTMLIFrameElement): Document {
+      let doc = docs.get(this);
+      if (doc === undefined) {
+        doc = document.implementation.createHTMLDocument("player");
+        docs.set(this, doc);
+      }
+      return doc;
+    },
+  });
+  return () => {
+    if (original !== undefined) {
+      Object.defineProperty(
+        HTMLIFrameElement.prototype,
+        "contentDocument",
+        original,
+      );
+    } else {
+      delete (
+        HTMLIFrameElement.prototype as { contentDocument?: unknown }
+      ).contentDocument;
+    }
+  };
+}
+
 beforeEach(() => {
   document.body.innerHTML = "";
 });
@@ -398,6 +433,74 @@ describe("renderHome", () => {
 
     expect(frameAfter).not.toBe(frameBefore);
     expect(frameAfter?.getAttribute("src")).toContain("bvid=BV2");
+  });
+
+  it("injects the player-chrome override style into the iframe document, once per document", () => {
+    const restore = stubIframeDocuments();
+    try {
+      const state = makeState({ playingBvid: "BV1" });
+      const handlers = createHandlers();
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+
+      renderHome(root, state, handlers);
+      const frame = root.querySelector(
+        "aside iframe",
+      ) as HTMLIFrameElement;
+      const doc = frame.contentDocument as Document;
+      expect(doc).not.toBeNull();
+
+      const style = doc.getElementById("follows-only-player-chrome");
+      expect(style).not.toBeNull();
+      expect(style?.textContent).toContain(
+        ".mplayer .mplayer-control-bar-hide .mplayer-control-bar",
+      );
+      expect(style?.textContent).toContain("opacity: 1 !important");
+      expect(style?.textContent).toContain("transform: none !important");
+      expect(style?.textContent).toContain("visibility: visible !important");
+
+      // 缓存 pane 复用同一个 iframe:重绘不重复注入。
+      renderHome(root, state, handlers);
+      expect(
+        doc.querySelectorAll("#follows-only-player-chrome").length,
+      ).toBe(1);
+
+      // 换视频重建 iframe:新文档也会注入。
+      renderHome(root, makeState({ playingBvid: "BV2" }), handlers);
+      const frameAfter = root.querySelector(
+        "aside iframe",
+      ) as HTMLIFrameElement;
+      expect(frameAfter.contentDocument).not.toBe(doc);
+      expect(
+        frameAfter.contentDocument?.getElementById(
+          "follows-only-player-chrome",
+        ),
+      ).not.toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it("re-injects the player-chrome override style when the iframe load fires", () => {
+    const restore = stubIframeDocuments();
+    try {
+      const handlers = createHandlers();
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+
+      renderHome(root, makeState({ playingBvid: "BV1" }), handlers);
+      const frame = root.querySelector(
+        "aside iframe",
+      ) as HTMLIFrameElement;
+      const doc = frame.contentDocument as Document;
+      doc.getElementById("follows-only-player-chrome")?.remove();
+
+      frame.dispatchEvent(new Event("load"));
+
+      expect(doc.getElementById("follows-only-player-chrome")).not.toBeNull();
+    } finally {
+      restore();
+    }
   });
 
   it("uses the exact copy strings", () => {

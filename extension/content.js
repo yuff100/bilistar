@@ -603,6 +603,32 @@
   function embedUrl(bvid) {
     return `https://www.bilibili.com/blackboard/html5mobileplayer.html?bvid=${bvid}&danmaku=1&autoplay=1`;
   }
+  var PLAYER_CHROME_STYLE_ID = "follows-only-player-chrome";
+  var PLAYER_CHROME_CSS = [
+    ".mplayer .mplayer-control-bar-hide .mplayer-control-bar,",
+    ".mplayer .mplayer-control-bar-hide .mplayer-right,",
+    ".mplayer-display.mplayer-control-bar-hide .mplayer-top {",
+    "opacity: 1 !important;",
+    "transform: none !important;",
+    "visibility: visible !important;",
+    "}"
+  ].join("");
+  function injectPlayerChromeStyle(frame) {
+    try {
+      const doc = frame.contentDocument;
+      if (doc === null) {
+        return;
+      }
+      if (doc.getElementById(PLAYER_CHROME_STYLE_ID) !== null) {
+        return;
+      }
+      const style = doc.createElement("style");
+      style.id = PLAYER_CHROME_STYLE_ID;
+      style.textContent = PLAYER_CHROME_CSS;
+      (doc.head ?? doc.documentElement).appendChild(style);
+    } catch {
+    }
+  }
   function videoUrl(bvid) {
     return `https://www.bilibili.com/video/${bvid}`;
   }
@@ -856,8 +882,12 @@
         frame = document.createElement("iframe");
         frame.src = embedUrl(playingBvid);
         frame.setAttribute("allowfullscreen", "");
+        frame.addEventListener("load", () => {
+          injectPlayerChromeStyle(frame);
+        });
         playerPane.appendChild(frame);
       }
+      injectPlayerChromeStyle(frame);
       playerPane.dataset.playing = "";
       while (frame.nextSibling !== null) {
         frame.nextSibling.remove();

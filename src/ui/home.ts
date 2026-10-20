@@ -211,6 +211,43 @@ function embedUrl(bvid: string): string {
   return `https://www.bilibili.com/blackboard/html5mobileplayer.html?bvid=${bvid}&danmaku=1&autoplay=1`;
 }
 
+// ---- H5 播放器控制条常显 ----
+// html5mobileplayer 在我们的窄栏里会误判为移动场景,给 .mplayer-display 挂上
+// .mplayer-control-bar-hide 后控制条/顶栏就再不出现。嵌入页与主站同源,
+// 可以直接往 iframe.contentDocument 注入一段 !important 覆盖样式强制常显。
+// 样式元素随 iframe 文档存续,跨重绘保活(同一个 iframe 被重新挂载)不需要重注;
+// 换 bvid 重建 iframe 或 iframe 重新 load 时再补一次。
+export const PLAYER_CHROME_STYLE_ID = "follows-only-player-chrome";
+
+const PLAYER_CHROME_CSS = [
+  ".mplayer .mplayer-control-bar-hide .mplayer-control-bar,",
+  ".mplayer .mplayer-control-bar-hide .mplayer-right,",
+  ".mplayer-display.mplayer-control-bar-hide .mplayer-top {",
+  "opacity: 1 !important;",
+  "transform: none !important;",
+  "visibility: visible !important;",
+  "}",
+].join("");
+
+function injectPlayerChromeStyle(frame: HTMLIFrameElement): void {
+  try {
+    const doc = frame.contentDocument;
+    if (doc === null) {
+      return;
+    }
+    if (doc.getElementById(PLAYER_CHROME_STYLE_ID) !== null) {
+      return;
+    }
+    const style = doc.createElement("style");
+    style.id = PLAYER_CHROME_STYLE_ID;
+    style.textContent = PLAYER_CHROME_CSS;
+    (doc.head ?? doc.documentElement).appendChild(style);
+  } catch {
+    // 跨域或文档尚未就绪时 contentDocument 会抛错/为 null,静默放弃;
+    // load 事件里会再试一次。
+  }
+}
+
 function videoUrl(bvid: string): string {
   return `https://www.bilibili.com/video/${bvid}`;
 }
@@ -512,8 +549,15 @@ export function renderHome(
       frame = document.createElement("iframe");
       frame.src = embedUrl(playingBvid);
       frame.setAttribute("allowfullscreen", "");
+      // load 时补注入:iframe 文档就绪后样式才挂得上(同一元素跨重绘保活,
+      // 监听器随元素存续,后续 src 变化导致的重新 load 也会再覆盖一次)。
+      frame.addEventListener("load", () => {
+        injectPlayerChromeStyle(frame);
+      });
       playerPane.appendChild(frame);
     }
+    // 立刻注入一次:文档已就绪(缓存 pane 复用)时当场生效;未就绪则等 load。
+    injectPlayerChromeStyle(frame);
     playerPane.dataset.playing = "";
 
     // iframe 之后的部分按本次状态重建:标题随可见列表变化,链接接到本次 handlers。
