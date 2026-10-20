@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Following, Submission } from "../../src/domain/feed.js";
 import {
+  GROUP_COPY,
   HOME_COPY,
-  TAGS_STORAGE_KEY,
-  TAG_COPY,
   renderHome,
   type HomeHandlers,
   type HomeState,
+  type NativeGroup,
 } from "../../src/ui/home.js";
 
 const followings: Following[] = [
@@ -33,12 +33,14 @@ const submissions: Submission[] = [
 
 function createHandlers(): HomeHandlers & {
   onSelect: ReturnType<typeof vi.fn>;
+  onMoveGroup: ReturnType<typeof vi.fn>;
   onOpenVideo: ReturnType<typeof vi.fn>;
   onPlay: ReturnType<typeof vi.fn>;
   onLoadMore: ReturnType<typeof vi.fn>;
 } {
   return {
     onSelect: vi.fn(),
+    onMoveGroup: vi.fn(async () => true),
     onOpenVideo: vi.fn(),
     onPlay: vi.fn(),
     onLoadMore: vi.fn(),
@@ -48,10 +50,12 @@ function createHandlers(): HomeHandlers & {
 function makeState(overrides: Partial<HomeState> = {}): HomeState {
   return {
     followings,
+    groups: [],
     submissions,
-    selectedMid: null,
+    selection: { kind: "all" },
     hasMore: false,
     playingBvid: null,
+    moveErrorMid: null,
     ...overrides,
   };
 }
@@ -162,7 +166,9 @@ describe("renderHome", () => {
   });
 
   it("filters submissions and shows work links when an UP is selected", () => {
-    const { root } = setup(makeState({ selectedMid: 2 }));
+    const { root } = setup(
+      makeState({ selection: { kind: "up", mid: 2 } }),
+    );
 
     expect(root.querySelectorAll("[data-bvid]").length).toBe(1);
     expect(root.querySelector('[data-bvid="BV1"]')).not.toBeNull();
@@ -186,10 +192,10 @@ describe("renderHome", () => {
     const { root, handlers } = setup(makeState());
 
     (root.querySelector('[data-follows-mid="3"]') as HTMLElement).click();
-    expect(handlers.onSelect).toHaveBeenCalledWith(3);
+    expect(handlers.onSelect).toHaveBeenCalledWith({ kind: "up", mid: 3 });
 
     (root.querySelector('[data-follows="all"]') as HTMLElement).click();
-    expect(handlers.onSelect).toHaveBeenCalledWith(null);
+    expect(handlers.onSelect).toHaveBeenCalledWith({ kind: "all" });
 
     (root.querySelector('[data-bvid="BV1"]') as HTMLElement).click();
     expect(handlers.onPlay).toHaveBeenCalledWith("BV1");
@@ -224,14 +230,16 @@ describe("renderHome", () => {
   });
 
   it("renders no input element on the page", () => {
-    const { root } = setup(makeState({ selectedMid: 2, hasMore: true }));
+    const { root } = setup(
+      makeState({ selection: { kind: "up", mid: 2 }, hasMore: true }),
+    );
 
     expect(root.querySelector("input")).toBeNull();
   });
 
   it("injects the shared follows-only-ui stylesheet once", () => {
     setup(makeState());
-    setup(makeState({ selectedMid: 2 }));
+    setup(makeState({ selection: { kind: "up", mid: 2 } }));
 
     const styles = document.querySelectorAll("#follows-only-ui");
     expect(styles.length).toBe(1);
@@ -409,7 +417,7 @@ describe("renderHome", () => {
       makeState({
         // 选中 UP 后 main.ts 会传入该 UP 的投稿,BV1 不在其中。
         submissions: submissions.filter((item) => item.authorMid === 3),
-        selectedMid: 3,
+        selection: { kind: "up", mid: 3 },
         playingBvid: "BV1",
       }),
       handlers,
@@ -517,25 +525,17 @@ describe("renderHome", () => {
   });
 });
 
-describe("renderHome 标签分组", () => {
-  const taggedFollowings: Following[] = [
+describe("renderHome 原生分组", () => {
+  const groupedFollowings: Following[] = [
     { mid: 2, name: "影视飓风" },
     { mid: 3, name: "何同学" },
     { mid: 4, name: "老番茄" },
   ];
 
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
-  function seedTags(tags: Record<string, string>): void {
-    localStorage.setItem(TAGS_STORAGE_KEY, JSON.stringify(tags));
-  }
-
-  function storedTags(): Record<string, string> {
-    const raw = localStorage.getItem(TAGS_STORAGE_KEY);
-    return raw === null ? {} : (JSON.parse(raw) as Record<string, string>);
-  }
+  const nativeGroups: NativeGroup[] = [
+    { tagid: 10, name: "科技", mids: [2, 4] },
+    { tagid: 11, name: "生活", mids: [4, 99] },
+  ];
 
   function sidebarEntries(root: HTMLElement): string[] {
     return [...root.querySelectorAll("nav ul>li")].map((li) => {
@@ -545,171 +545,252 @@ describe("renderHome 标签分组", () => {
       if (li.hasAttribute("data-follows-mid")) {
         return `mid:${li.getAttribute("data-follows-mid")}`;
       }
-      return `tag:${li.getAttribute("data-tag-group") ?? ""}`;
+      return `group:${li.getAttribute("data-group-id") ?? ""}`;
     });
   }
 
-  function startEditing(root: HTMLElement, mid: number): HTMLInputElement {
+  function openPicker(root: HTMLElement, mid: number): HTMLElement {
     const button = root.querySelector(
-      `[data-tag-edit="${mid}"]`,
+      `[data-group-edit="${mid}"]`,
     ) as HTMLButtonElement | null;
     expect(button).not.toBeNull();
     (button as HTMLButtonElement).click();
-    const input = root.querySelector(
-      `[data-tag-input="${mid}"]`,
-    ) as HTMLInputElement | null;
-    expect(input).not.toBeNull();
-    return input as HTMLInputElement;
+    const picker = root.querySelector(
+      `[data-group-picker="${mid}"]`,
+    ) as HTMLElement | null;
+    expect(picker).not.toBeNull();
+    return picker as HTMLElement;
   }
 
-  function pressKey(input: HTMLInputElement, key: string): void {
-    input.dispatchEvent(
-      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
-    );
-  }
+  it("没有任何分组时保持扁平列表，不出现分组头", () => {
+    const { root } = setup(makeState({ followings: groupedFollowings }));
 
-  it("没有任何标签时保持扁平列表，不出现分组头", () => {
-    const { root } = setup(makeState({ followings: taggedFollowings }));
-
-    expect(root.querySelectorAll("[data-tag-group]").length).toBe(0);
+    expect(root.querySelectorAll("[data-group-id]").length).toBe(0);
     expect(sidebarEntries(root)).toEqual(["all", "mid:2", "mid:3", "mid:4"]);
   });
 
-  it("组按标签首次出现顺序排，组内保持原顺序，未分组垫底", () => {
-    seedTags({ "2": "书法", "3": "物理", "4": "书法" });
-    const { root } = setup(makeState({ followings: taggedFollowings }));
-
-    expect(sidebarEntries(root)).toEqual([
-      "all",
-      "tag:书法",
-      "mid:2",
-      "mid:4",
-      "tag:物理",
-      "mid:3",
-    ]);
-  });
-
-  it("有标签时没打标签的 UP 进「未分组」，排在所有分组之后", () => {
-    seedTags({ "2": "书法" });
-    const { root } = setup(makeState({ followings: taggedFollowings }));
-
-    expect(sidebarEntries(root)).toEqual([
-      "all",
-      "tag:书法",
-      "mid:2",
-      "tag:",
-      "mid:3",
-      "mid:4",
-    ]);
-    expect(root.querySelector('[data-tag-group=""]')?.textContent).toBe(
-      TAG_COPY.ungrouped,
+  it("组按接口顺序排，组内只列已关注成员，UP 可在多组重复出现，未分组垫底", () => {
+    const { root } = setup(
+      makeState({ followings: groupedFollowings, groups: nativeGroups }),
     );
+
+    // 组 99(未关注)不出现在侧栏;4 号在科技、生活两组都出现;
+    // 3 号没进任何自定义组,落进「未分组」。
+    expect(sidebarEntries(root)).toEqual([
+      "all",
+      "group:10",
+      "mid:2",
+      "mid:4",
+      "group:11",
+      "mid:4",
+      "group:",
+      "mid:3",
+    ]);
+    expect(
+      root.querySelector('[data-group-id="10"]')?.textContent,
+    ).toBe("科技");
+    expect(
+      root.querySelector('[data-group-id=""]')?.textContent,
+    ).toBe(GROUP_COPY.ungrouped);
   });
 
-  it("点 ✎ 不触发选人，Enter 保存写入 localStorage 并立刻重新分组", () => {
+  it("没有任何已关注成员的自定义组存在时也保持扁平列表", () => {
+    const { root } = setup(
+      makeState({
+        followings: groupedFollowings,
+        groups: [{ tagid: 10, name: "科技", mids: [99] }],
+      }),
+    );
+
+    expect(root.querySelectorAll("[data-group-id]").length).toBe(0);
+    expect(sidebarEntries(root)).toEqual(["all", "mid:2", "mid:3", "mid:4"]);
+  });
+
+  it("点组头选中分组，点 UP 行选人，点全部更新清空选中", () => {
     const { root, handlers } = setup(
-      makeState({ followings: taggedFollowings }),
+      makeState({ followings: groupedFollowings, groups: nativeGroups }),
     );
 
-    const input = startEditing(root, 2);
-    expect(handlers.onSelect).not.toHaveBeenCalled();
-    expect(input.getAttribute("aria-label")).toBe("打标签");
-    expect(input.maxLength).toBe(12);
+    (root.querySelector('[data-group-id="10"]') as HTMLElement).click();
+    expect(handlers.onSelect).toHaveBeenCalledWith({
+      kind: "group",
+      tagid: 10,
+      mids: [2, 4],
+    });
 
-    input.value = "书法";
-    pressKey(input, "Enter");
-
-    expect(storedTags()).toEqual({ "2": "书法" });
-    expect(root.querySelector("[data-tag-input]")).toBeNull();
-    expect(sidebarEntries(root)).toEqual([
-      "all",
-      "tag:书法",
-      "mid:2",
-      "tag:",
-      "mid:3",
-      "mid:4",
-    ]);
-  });
-
-  it("编辑态预填已有标签，清空后 Enter 视为清除", () => {
-    seedTags({ "2": "书法" });
-    const { root } = setup(makeState());
-
-    const input = startEditing(root, 2);
-    expect(input.value).toBe("书法");
-
-    input.value = "";
-    pressKey(input, "Enter");
-
-    expect(storedTags()).toEqual({});
-    expect(root.querySelectorAll("[data-tag-group]").length).toBe(0);
-  });
-
-  it("Escape 取消编辑，不写 localStorage", () => {
-    const { root } = setup(makeState());
-
-    const input = startEditing(root, 3);
-    input.value = "物理";
-    pressKey(input, "Escape");
-
-    expect(localStorage.getItem(TAGS_STORAGE_KEY)).toBeNull();
-    expect(root.querySelector("[data-tag-input]")).toBeNull();
-    expect(root.querySelectorAll("[data-tag-group]").length).toBe(0);
-  });
-
-  it("失焦(blur)同样保存", () => {
-    const { root } = setup(makeState());
-
-    const input = startEditing(root, 2);
-    input.value = "科普";
-    input.dispatchEvent(new FocusEvent("blur"));
-
-    expect(storedTags()).toEqual({ "2": "科普" });
-    expect(root.querySelector("[data-tag-input]")).toBeNull();
-  });
-
-  it("保存时去掉首尾空格，超过 12 字的部分被截断", () => {
-    const { root } = setup(makeState());
-
-    const input = startEditing(root, 2);
-    input.value = "  物理科普经济书法AI知识区  ";
-    pressKey(input, "Enter");
-
-    expect(storedTags()).toEqual({ "2": "物理科普经济书法AI知识" });
-  });
-
-  it("选中的 UP 在分组里仍然 aria-current 高亮，行点击照常选人", () => {
-    seedTags({ "2": "书法" });
-    const { root, handlers } = setup(
-      makeState({ followings: taggedFollowings, selectedMid: 2 }),
-    );
-
-    const row = root.querySelector('li[data-follows-mid="2"]');
-    expect(row?.getAttribute("aria-current")).toBe("page");
+    (root.querySelector('[data-group-id=""]') as HTMLElement).click();
+    expect(handlers.onSelect).toHaveBeenCalledWith({
+      kind: "group",
+      tagid: null,
+      mids: [3],
+    });
 
     (root.querySelector('li[data-follows-mid="3"]') as HTMLElement).click();
-    expect(handlers.onSelect).toHaveBeenCalledWith(3);
+    expect(handlers.onSelect).toHaveBeenCalledWith({ kind: "up", mid: 3 });
+
+    (root.querySelector('[data-follows="all"]') as HTMLElement).click();
+    expect(handlers.onSelect).toHaveBeenCalledWith({ kind: "all" });
   });
 
-  it("编辑态随重绘保留在同一根节点上，换根节点消失", () => {
-    const state = makeState();
+  it("选中的组和选中的 UP 行都 aria-current 高亮", () => {
+    const { root } = setup(
+      makeState({
+        followings: groupedFollowings,
+        groups: nativeGroups,
+        selection: { kind: "group", tagid: 10, mids: [2, 4] },
+      }),
+    );
+
+    expect(
+      root.querySelector('[data-group-id="10"]')?.getAttribute("aria-current"),
+    ).toBe("page");
+    expect(
+      root.querySelector('[data-group-id=""]')?.hasAttribute("aria-current"),
+    ).toBe(false);
+    expect(
+      root
+        .querySelector('li[data-follows-mid="2"]')
+        ?.hasAttribute("aria-current"),
+    ).toBe(false);
+
+    document.body.innerHTML = "";
+    const up = setup(
+      makeState({
+        followings: groupedFollowings,
+        groups: nativeGroups,
+        selection: { kind: "up", mid: 2 },
+      }),
+    );
+    expect(
+      up.root
+        .querySelector('li[data-follows-mid="2"]')
+        ?.getAttribute("aria-current"),
+    ).toBe("page");
+  });
+
+  it("分组选中时投稿按传入原样展示，不再按组二次过滤", () => {
+    const { root } = setup(
+      makeState({
+        selection: { kind: "group", tagid: 10, mids: [2, 4] },
+        submissions: submissions.filter((item) => item.authorMid === 2),
+      }),
+    );
+
+    expect(root.querySelectorAll("[data-bvid]").length).toBe(1);
+    expect(root.querySelector('[data-bvid="BV1"]')).not.toBeNull();
+    // 组视图没有对应的 UP,也就没有专栏/合集/课程入口。
+    expect(root.textContent).not.toContain("专栏");
+  });
+
+  it("点 ✎ 打开分组浮层：列出所有自定义组(含无关注成员的组)加未分组，不冒泡选人", () => {
+    const { root, handlers } = setup(
+      makeState({
+        followings: groupedFollowings,
+        groups: [
+          ...nativeGroups,
+          { tagid: 12, name: "空组", mids: [99] },
+        ],
+      }),
+    );
+
+    const picker = openPicker(root, 3);
+    expect(handlers.onSelect).not.toHaveBeenCalled();
+    expect(
+      [...picker.querySelectorAll("button")].map(
+        (button) => button.textContent,
+      ),
+    ).toEqual(["科技", "生活", "空组", "未分组"]);
+    expect(picker.querySelectorAll('[data-group-option="12"]').length).toBe(1);
+    // 3 号当前未分组:「未分组」选项带 aria-current,其余不带。
+    expect(
+      picker
+        .querySelector('[data-group-option=""]')
+        ?.getAttribute("aria-current"),
+    ).toBe("true");
+    expect(
+      picker
+        .querySelector('[data-group-option="10"]')
+        ?.hasAttribute("aria-current"),
+    ).toBe(false);
+  });
+
+  it("点浮层选项调用 onMoveGroup 并立刻关闭浮层，再点 ✎ 可切换关闭", () => {
+    const { root, handlers } = setup(
+      makeState({ followings: groupedFollowings, groups: nativeGroups }),
+    );
+
+    let picker = openPicker(root, 2);
+    (picker.querySelector('[data-group-option="11"]') as HTMLElement).click();
+    expect(handlers.onMoveGroup).toHaveBeenCalledWith(2, 11);
+    expect(handlers.onSelect).not.toHaveBeenCalled();
+    expect(root.querySelector("[data-group-picker]")).toBeNull();
+
+    // 再打开后选择「未分组」选项,tagid 传 null。
+    picker = openPicker(root, 2);
+    (picker.querySelector('[data-group-option=""]') as HTMLElement).click();
+    expect(handlers.onMoveGroup).toHaveBeenCalledWith(2, null);
+
+    // 已开着时再点一次 ✎ 是关闭,不新建浮层。
+    const firstEdit = (): HTMLButtonElement =>
+      root.querySelector('[data-group-edit="4"]') as HTMLButtonElement;
+    firstEdit().click();
+    expect(root.querySelectorAll("[data-group-picker]").length).toBe(1);
+    firstEdit().click();
+    expect(root.querySelector("[data-group-picker]")).toBeNull();
+  });
+
+  it("浮层随重绘保留在同一根节点上，换根节点消失", () => {
+    const state = makeState({
+      followings: groupedFollowings,
+      groups: nativeGroups,
+    });
     const { root, handlers } = setup(state);
 
-    startEditing(root, 2);
+    openPicker(root, 2);
     renderHome(root, state, handlers);
-    expect(root.querySelector('[data-tag-input="2"]')).not.toBeNull();
+    expect(root.querySelector('[data-group-picker="2"]')).not.toBeNull();
 
     const fresh = document.createElement("div");
     document.body.appendChild(fresh);
     renderHome(fresh, state, handlers);
-    expect(fresh.querySelector("[data-tag-input]")).toBeNull();
+    expect(fresh.querySelector("[data-group-picker]")).toBeNull();
   });
 
-  it("localStorage 里存了坏数据时按无标签渲染", () => {
-    localStorage.setItem(TAGS_STORAGE_KEY, "{oops");
-    const { root } = setup(makeState());
+  it("移动失败时在该行挂出提示，打开浮层时先藏起来", () => {
+    const { root } = setup(
+      makeState({
+        followings: groupedFollowings,
+        groups: nativeGroups,
+        moveErrorMid: 2,
+      }),
+    );
 
-    expect(root.querySelectorAll("[data-tag-group]").length).toBe(0);
-    expect(sidebarEntries(root)).toEqual(["all", "mid:2", "mid:3"]);
+    const error = root.querySelector("[data-group-error]");
+    expect(error?.textContent).toBe(GROUP_COPY.moveFailed);
+    expect(
+      root
+        .querySelector('li[data-follows-mid="2"]')
+        ?.textContent,
+    ).toContain(GROUP_COPY.moveFailed);
+    expect(
+      root
+        .querySelector('li[data-follows-mid="3"]')
+        ?.querySelector("[data-group-error]"),
+    ).toBeNull();
+
+    openPicker(root, 2);
+    expect(
+      root
+        .querySelector('li[data-follows-mid="2"]')
+        ?.querySelector("[data-group-error]"),
+    ).toBeNull();
+  });
+
+  it("使用固定的文案常量", () => {
+    expect(GROUP_COPY).toEqual({
+      ungrouped: "未分组",
+      editLabel: "移动分组",
+      moveFailed: "移动失败，请重试",
+    });
   });
 });

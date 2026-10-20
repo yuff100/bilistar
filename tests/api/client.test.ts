@@ -1,18 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  addUserToGroups,
   followUp,
   getSession,
   getVideoOwner,
   getWorkAuthor,
   listAllSubmissions,
   listFollowings,
+  listGroupMembers,
+  listRelationTags,
   listUpSubmissions,
   parseDynamics,
   parseFollowings,
+  parseGroupMembers,
+  parseRelationTags,
   parseSession,
   parseViewOwner,
   parseWorkAuthor,
   readCsrfToken,
+  removeUserFromGroups,
 } from "../../src/api/client.js";
 
 function fakeFetch(payload: unknown) {
@@ -412,5 +418,111 @@ describe("followUp", () => {
     await expect(followUp(2, "abc", fetchImpl)).resolves.toEqual({
       ok: false,
     });
+  });
+});
+
+describe("parseRelationTags", () => {
+  it("keeps custom groups and drops implicit ones", () => {
+    expect(
+      parseRelationTags({
+        code: 0,
+        data: [
+          { tagid: 0, name: "特别关注" },
+          { tagid: -10, name: "默认分组" },
+          { tagid: 10, name: " 影视 " },
+          { tagid: 11, name: "全部" },
+          { tagid: 12, name: "科技" },
+        ],
+      }),
+    ).toEqual([
+      { tagid: 10, name: "影视" },
+      { tagid: 12, name: "科技" },
+    ]);
+  });
+
+  it("also reads data.list", () => {
+    expect(
+      parseRelationTags({
+        code: 0,
+        data: { list: [{ tagid: 8, name: "生活" }] },
+      }),
+    ).toEqual([{ tagid: 8, name: "生活" }]);
+  });
+});
+
+describe("listRelationTags", () => {
+  it("requests the tags endpoint with the page session", async () => {
+    const { mock, fetchImpl } = fakeFetch({
+      code: 0,
+      data: [{ tagid: 10, name: "影视" }],
+    });
+
+    await expect(listRelationTags(fetchImpl)).resolves.toEqual([
+      { tagid: 10, name: "影视" },
+    ]);
+    expect(mock.mock.calls[0][0]).toBe(
+      "https://api.bilibili.com/x/relation/tags",
+    );
+    expect(mock.mock.calls[0][1]).toEqual({ credentials: "include" });
+  });
+});
+
+describe("parseGroupMembers", () => {
+  it("reads member mids from data.list", () => {
+    expect(
+      parseGroupMembers({
+        code: 0,
+        data: { list: [{ mid: 2 }, { mid: "3" }, { uname: "无 mid" }] },
+      }),
+    ).toEqual([2, 3]);
+  });
+});
+
+describe("listGroupMembers", () => {
+  it("requests a page of group members", async () => {
+    const { mock, fetchImpl } = fakeFetch({
+      code: 0,
+      data: { list: [{ mid: 2 }] },
+    });
+
+    await expect(listGroupMembers(10, 1, fetchImpl)).resolves.toEqual([2]);
+    expect(mock.mock.calls[0][0]).toBe(
+      "https://api.bilibili.com/x/relation/tag?tagid=10&pn=1&ps=50",
+    );
+    expect(mock.mock.calls[0][1]).toEqual({ credentials: "include" });
+  });
+});
+
+describe("addUserToGroups / removeUserFromGroups", () => {
+  it("posts form-encoded membership changes", async () => {
+    const { mock, fetchImpl } = fakeFetch({ code: 0 });
+
+    await expect(addUserToGroups(2, [10], "abc", fetchImpl)).resolves.toBe(
+      true,
+    );
+    expect(mock.mock.calls[0][0]).toBe(
+      "https://api.bilibili.com/x/relation/tags/addUsers?csrf=abc",
+    );
+    const addInit = mock.mock.calls[0][1] as RequestInit;
+    expect(addInit.method).toBe("POST");
+    expect(addInit.credentials).toBe("include");
+    expect(addInit.body).toBe("fids=2&tagids=10");
+
+    await expect(removeUserFromGroups(2, [10, 11], "abc", fetchImpl)).resolves.toBe(
+      true,
+    );
+    expect(mock.mock.calls[1][0]).toBe(
+      "https://api.bilibili.com/x/relation/tags/delUsers?csrf=abc",
+    );
+    expect((mock.mock.calls[1][1] as RequestInit).body).toBe(
+      "fids=2&tagids=10,11",
+    );
+  });
+
+  it("reports failure when the api rejects", async () => {
+    const { fetchImpl } = fakeFetch({ code: -403 });
+    await expect(addUserToGroups(2, [10], "abc", fetchImpl)).resolves.toBe(
+      false,
+    );
   });
 });

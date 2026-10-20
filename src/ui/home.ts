@@ -1,16 +1,35 @@
 import type { Following, Submission } from "../domain/feed.js";
 import { ensureUiStyle } from "./style.js";
 
+/** 原生关注分组:服务器端的自定义分组(tagid>0),mids 是该组的全部成员,
+ *  可能包含没有关注的人——侧栏渲染时再和关注列表求交集。 */
+export type NativeGroup = {
+  tagid: number;
+  name: string;
+  mids: number[];
+};
+
+/** 侧栏选中状态:全部 / 单个 UP / 一个分组(含「未分组」,tagid 为 null)。 */
+export type HomeSelection =
+  | { kind: "all" }
+  | { kind: "up"; mid: number }
+  | { kind: "group"; tagid: number | null; mids: number[] };
+
 export type HomeState = {
   followings: Following[];
+  groups: NativeGroup[];
   submissions: Submission[];
-  selectedMid: number | null;
+  selection: HomeSelection;
   hasMore: boolean;
   playingBvid: string | null;
+  /** 最近一次移动分组失败的那个 UP;由 main.ts 维护,渲染层只负责展示。 */
+  moveErrorMid: number | null;
 };
 
 export type HomeHandlers = {
-  onSelect: (mid: number | null) => void;
+  onSelect: (selection: HomeSelection) => void;
+  /** 把 UP 移入分组(tagid 为 null 表示移出所有自定义分组);返回是否成功。 */
+  onMoveGroup: (mid: number, tagid: number | null) => Promise<boolean>;
   onOpenVideo: (bvid: string) => void;
   onPlay: (bvid: string) => void;
   onLoadMore: () => void;
@@ -34,139 +53,40 @@ export const PLAYER_COPY = {
   restore: "›",
 } as const;
 
-// ---- 侧栏标签分组 ----
-// 一个 UP 至多一个标签,自由文本(去首尾空格,最长 12 字)。
-// 持久化在页面源的 localStorage(键 follows-only-tags,JSON { "<mid>": "<tag>" }),
-// 每次渲染现读、编辑时现写;不用 chrome.storage,manifest 不新增权限。
-// 正在编辑哪一行是会话内的渲染层状态,挂在根节点 WeakMap 上(和 PaneCache 同理),
-// 重绘保留、换根节点(新页面/测试夹具)自动消失,不落盘。
+// ---- 侧栏原生分组 ----
+// 分组来自 B 站服务器(关注分组),本地不再存标签;移动分组走原生接口。
+// 「正在给哪一行开分组选择浮层」是会话内的渲染层状态,挂在根节点 WeakMap 上
+// (和 PaneCache 同理),重绘保留、换根节点(新页面/测试夹具)自动消失,不落盘。
 //
 // 新增 data-* 约定:
-//   li[data-tag-group="<tag>"]   分组头;「未分组」头的值为空串
-//   button[data-tag-edit="<mid>"] 行内打标签入口(悬停/聚焦才可见;字形由 CSS ::after
-//                                 提供,按钮本身没有文本,行的 textContent 仍是 UP 名)
-//   li[data-tag-editing]         处于编辑态的行
-//   input[data-tag-input="<mid>"] 编辑输入框,aria-label 为「打标签」
-export const TAGS_STORAGE_KEY = "follows-only-tags";
-export const TAG_MAX_LENGTH = 12;
-
-export const TAG_COPY = {
+//   li[data-group-id="<tagid>"]   自定义分组头;「未分组」头的值为空串;
+//                                 点击组头=按该组成员过滤中栏投稿
+//   button[data-group-edit="<mid>"] 行内「移动分组」入口(悬停/聚焦才可见;字形由 CSS
+//                                 ::after 提供,按钮本身没有文本,行的 textContent 仍是 UP 名)
+//   div[data-group-picker="<mid>"] 分组选择浮层(选项列已有的自定义分组 + 「未分组」;
+//                                 不提供建组入口,建组去 B 站)
+//   button[data-group-option="<tagid>"] 浮层里的组选项;「未分组」的值为空串;
+//                                 当前所在组带 aria-current="true"
+//   span[data-group-error]        移动失败的提示文本
+export const GROUP_COPY = {
   ungrouped: "未分组",
-  editLabel: "编辑标签",
-  inputLabel: "打标签",
+  editLabel: "移动分组",
+  moveFailed: "移动失败，请重试",
 } as const;
 
-type TagEditCache = {
-  editingMid: number | null;
+type GroupPickerCache = {
+  openMid: number | null;
 };
 
-const tagEditCacheMap = new WeakMap<HTMLElement, TagEditCache>();
+const groupPickerMap = new WeakMap<HTMLElement, GroupPickerCache>();
 
-function tagEditCacheOf(root: HTMLElement): TagEditCache {
-  let cache = tagEditCacheMap.get(root);
+function groupPickerCacheOf(root: HTMLElement): GroupPickerCache {
+  let cache = groupPickerMap.get(root);
   if (cache === undefined) {
-    cache = { editingMid: null };
-    tagEditCacheMap.set(root, cache);
+    cache = { openMid: null };
+    groupPickerMap.set(root, cache);
   }
   return cache;
-}
-
-function storageOf(document: Document): Storage | null {
-  try {
-    return document.defaultView?.localStorage ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeTag(value: string): string | null {
-  const tag = value.trim().slice(0, TAG_MAX_LENGTH);
-  return tag === "" ? null : tag;
-}
-
-function readUpTags(storage: Storage | null): Record<string, string> {
-  if (storage === null) {
-    return {};
-  }
-  let raw: string | null;
-  try {
-    raw = storage.getItem(TAGS_STORAGE_KEY);
-  } catch {
-    return {};
-  }
-  if (raw === null) {
-    return {};
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {};
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return {};
-  }
-  const tags: Record<string, string> = {};
-  for (const [mid, value] of Object.entries(parsed)) {
-    if (typeof value !== "string") {
-      continue;
-    }
-    const tag = normalizeTag(value);
-    if (tag !== null) {
-      tags[mid] = tag;
-    }
-  }
-  return tags;
-}
-
-function persistUpTag(
-  storage: Storage | null,
-  mid: number,
-  tag: string | null,
-): void {
-  if (storage === null) {
-    return;
-  }
-  const tags = readUpTags(storage);
-  const key = String(mid);
-  if (tag === null) {
-    delete tags[key];
-  } else {
-    tags[key] = tag;
-  }
-  try {
-    storage.setItem(TAGS_STORAGE_KEY, JSON.stringify(tags));
-  } catch {
-    // 写入被禁用或超配额时静默降级:本次修改不持久,重绘后回到存储里的旧状态。
-  }
-}
-
-type FollowGroup = { tag: string; items: Following[] };
-
-// 分组只重排展示顺序:组按标签在关注列表里首次出现的顺序排,组内保持原顺序;
-// 没打标签的进「未分组」,永远在最后。
-function groupFollowings(
-  followings: Following[],
-  tags: Record<string, string>,
-): { tagged: FollowGroup[]; untagged: Following[] } {
-  const tagged: FollowGroup[] = [];
-  const byTag = new Map<string, FollowGroup>();
-  const untagged: Following[] = [];
-  for (const following of followings) {
-    const tag = tags[String(following.mid)];
-    if (tag === undefined) {
-      untagged.push(following);
-      continue;
-    }
-    let group = byTag.get(tag);
-    if (group === undefined) {
-      group = { tag, items: [] };
-      byTag.set(tag, group);
-      tagged.push(group);
-    }
-    group.items.push(following);
-  }
-  return { tagged, untagged };
 }
 
 function workLinks(mid: number): Array<{ text: string; href: string }> {
@@ -260,15 +180,22 @@ export function renderHome(
   root.id = "follows-root";
   root.textContent = "";
 
-  const { followings, submissions, selectedMid, hasMore, playingBvid } = state;
+  const {
+    followings,
+    groups,
+    submissions,
+    selection,
+    hasMore,
+    playingBvid,
+    moveErrorMid,
+  } = state;
   const cache = paneCacheOf(root);
-  const tagEdit = tagEditCacheOf(root);
-  const tagStorage = storageOf(root.ownerDocument);
+  const picker = groupPickerCacheOf(root);
 
   ensureUiStyle(root.ownerDocument);
 
-  // 打标签的进入/保存/取消只影响侧栏分组,用同一份 state 原地整树重绘即可;
-  // 两栏滚动位置是用户正在看的内容,重绘前后手动保持。
+  // 开/关分组浮层、移动分组成功与否都由外层重绘收尾,
+  // 这里只重放同一份 state;两栏滚动位置是用户正在看的内容,重绘前后手动保持。
   const rerender = (): void => {
     const navBefore = root.querySelector("nav");
     const mainBefore = root.querySelector("main");
@@ -321,109 +248,165 @@ export function renderHome(
   const allItem = document.createElement("li");
   allItem.textContent = HOME_COPY.all;
   allItem.dataset.follows = "all";
-  if (selectedMid === null) {
+  if (selection.kind === "all") {
     allItem.setAttribute("aria-current", "page");
   }
-  allItem.addEventListener("click", () => handlers.onSelect(null));
+  allItem.addEventListener("click", () =>
+    handlers.onSelect({ kind: "all" }),
+  );
   followsList.appendChild(allItem);
 
-  // 标签每次渲染现读:任何一处刚写过的分组,这次重绘就生效。
-  const upTags = readUpTags(tagStorage);
-  const groups = groupFollowings(followings, upTags);
+  // 侧栏分组:自定义组按接口顺序排,组内只列已关注的成员
+  // (组里没有关注任何人就整组隐藏);没进任何自定义组的关注进「未分组」垫底。
+  // 一个自定义组都用不上时保持旧版扁平列表,不画组头。
+  const groupMidSets = groups.map((group) => new Set(group.mids));
+  const memberFollowings = (index: number): Following[] =>
+    followings.filter((following) => groupMidSets[index]!.has(following.mid));
+  const inAnyGroup = (mid: number): boolean =>
+    groupMidSets.some((mids) => mids.has(mid));
+  const visibleGroups = groups
+    .map((group, index) => ({ group, members: memberFollowings(index) }))
+    .filter((section) => section.members.length > 0);
 
-  const appendTagHeader = (text: string, tag: string): void => {
+  const appendGroupHeader = (
+    tagid: number | null,
+    text: string,
+    mids: number[],
+  ): void => {
     const header = document.createElement("li");
+    header.dataset.groupId = tagid === null ? "" : String(tagid);
     header.textContent = text;
-    header.dataset.tagGroup = tag;
+    if (selection.kind === "group" && selection.tagid === tagid) {
+      header.setAttribute("aria-current", "page");
+    }
+    header.addEventListener("click", () =>
+      handlers.onSelect({ kind: "group", tagid, mids }),
+    );
     followsList.appendChild(header);
   };
 
-  const appendFollowing = (following: Following): void => {
+  const groupOption = (
+    tagid: number | null,
+    text: string,
+    mid: number,
+    current: boolean,
+  ): HTMLButtonElement => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.dataset.groupOption = tagid === null ? "" : String(tagid);
+    option.textContent = text;
+    if (current) {
+      option.setAttribute("aria-current", "true");
+    }
+    option.addEventListener("click", (event) => {
+      // 行点击是选人,浮层里的选项不能冒泡触发选人。
+      event.stopPropagation();
+      // 选中即关浮层;成败由 onMoveGroup 结算后外层重绘收尾——
+      // 失败时分组保持原样,只在那一行挂出失败提示,不做假成功。
+      picker.openMid = null;
+      void handlers.onMoveGroup(mid, tagid);
+      rerender();
+    });
+    return option;
+  };
+
+  const appendFollowing = (
+    following: Following,
+    showPicker: boolean,
+  ): void => {
     const item = document.createElement("li");
     item.dataset.followsMid = String(following.mid);
-    if (selectedMid === following.mid) {
+    if (selection.kind === "up" && selection.mid === following.mid) {
       item.setAttribute("aria-current", "page");
     }
 
-    if (tagEdit.editingMid === following.mid) {
-      item.dataset.tagEditing = "";
-      const input = document.createElement("input");
-      input.type = "text";
-      input.value = upTags[String(following.mid)] ?? "";
-      input.maxLength = TAG_MAX_LENGTH;
-      input.dataset.tagInput = String(following.mid);
-      input.setAttribute("aria-label", TAG_COPY.inputLabel);
-      let settled = false;
-      // Enter/失焦保存(空串即清除标签),Escape 取消;只结算一次——
-      // 保存后的重绘会移除输入框,随之补发的 blur 不能再改存储。
-      const settle = (commit: boolean): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        tagEdit.editingMid = null;
-        if (commit) {
-          persistUpTag(tagStorage, following.mid, normalizeTag(input.value));
-        }
-        rerender();
-      };
-      input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          settle(true);
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          settle(false);
-        }
-      });
-      input.addEventListener("blur", () => settle(true));
-      input.addEventListener("click", (event) => event.stopPropagation());
-      item.appendChild(input);
-    } else {
-      const name = document.createElement("span");
-      name.textContent = following.name;
-      item.appendChild(name);
+    const name = document.createElement("span");
+    name.textContent = following.name;
+    item.appendChild(name);
 
-      const edit = document.createElement("button");
-      edit.type = "button";
-      edit.dataset.tagEdit = String(following.mid);
-      edit.setAttribute("aria-label", TAG_COPY.editLabel);
-      edit.addEventListener("click", (event) => {
-        // 行点击是选人,打标签入口不能冒泡触发选人。
-        event.stopPropagation();
-        tagEdit.editingMid = following.mid;
-        rerender();
-        const input = root.querySelector<HTMLInputElement>(
-          `[data-tag-input="${following.mid}"]`,
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.dataset.groupEdit = String(following.mid);
+    edit.setAttribute("aria-label", GROUP_COPY.editLabel);
+    edit.addEventListener("click", (event) => {
+      // 行点击是选人,移动分组入口不能冒泡触发选人。
+      event.stopPropagation();
+      picker.openMid = picker.openMid === following.mid ? null : following.mid;
+      rerender();
+    });
+    item.appendChild(edit);
+
+    if (showPicker) {
+      const popover = document.createElement("div");
+      popover.dataset.groupPicker = String(following.mid);
+      // 浮层列出所有自定义分组(含组内没有关注成员的)+「未分组」;
+      // 不提供新建分组入口,建组去 B 站。
+      for (const group of groups) {
+        popover.appendChild(
+          groupOption(
+            group.tagid,
+            group.name,
+            following.mid,
+            group.mids.includes(following.mid),
+          ),
         );
-        if (input !== null) {
-          input.focus();
-          input.select();
-        }
-      });
-      item.appendChild(edit);
+      }
+      popover.appendChild(
+        groupOption(
+          null,
+          GROUP_COPY.ungrouped,
+          following.mid,
+          !groups.some((group) => group.mids.includes(following.mid)),
+        ),
+      );
+      item.appendChild(popover);
     }
 
-    item.addEventListener("click", () => handlers.onSelect(following.mid));
+    if (moveErrorMid === following.mid && picker.openMid !== following.mid) {
+      const error = document.createElement("span");
+      error.dataset.groupError = "";
+      error.textContent = GROUP_COPY.moveFailed;
+      item.appendChild(error);
+    }
+
+    item.addEventListener("click", () =>
+      handlers.onSelect({ kind: "up", mid: following.mid }),
+    );
     followsList.appendChild(item);
   };
 
-  if (groups.tagged.length === 0) {
-    // 一个标签都没有时保持旧版扁平列表,不画分组头。
+  let pickerAttached = false;
+  const appendFollowingOncePicker = (following: Following): void => {
+    const showPicker =
+      picker.openMid === following.mid && !pickerAttached;
+    if (showPicker) {
+      pickerAttached = true;
+    }
+    appendFollowing(following, showPicker);
+  };
+
+  if (visibleGroups.length === 0) {
     for (const following of followings) {
-      appendFollowing(following);
+      appendFollowingOncePicker(following);
     }
   } else {
-    for (const group of groups.tagged) {
-      appendTagHeader(group.tag, group.tag);
-      for (const following of group.items) {
-        appendFollowing(following);
+    for (const { group, members } of visibleGroups) {
+      appendGroupHeader(group.tagid, group.name, members.map((f) => f.mid));
+      for (const following of members) {
+        appendFollowingOncePicker(following);
       }
     }
-    if (groups.untagged.length > 0) {
-      appendTagHeader(TAG_COPY.ungrouped, "");
-      for (const following of groups.untagged) {
-        appendFollowing(following);
+    const ungrouped = followings.filter(
+      (following) => !inAnyGroup(following.mid),
+    );
+    if (ungrouped.length > 0) {
+      appendGroupHeader(
+        null,
+        GROUP_COPY.ungrouped,
+        ungrouped.map((f) => f.mid),
+      );
+      for (const following of ungrouped) {
+        appendFollowingOncePicker(following);
       }
     }
   }
@@ -460,9 +443,9 @@ export function renderHome(
   mainHead.appendChild(collapseMid);
   main.appendChild(mainHead);
 
-  if (selectedMid !== null) {
+  if (selection.kind === "up") {
     const works = document.createElement("nav");
-    for (const { text, href } of workLinks(selectedMid)) {
+    for (const { text, href } of workLinks(selection.mid)) {
       const link = document.createElement("a");
       link.textContent = text;
       link.href = href;
@@ -471,12 +454,13 @@ export function renderHome(
     main.appendChild(works);
   }
 
+  // 分组视图的投稿已由外层筛好并截页,这里只对「单选 UP」再按 mid 过滤一道。
   const visible =
-    selectedMid === null
-      ? submissions
-      : submissions.filter(
-          (submission) => submission.authorMid === selectedMid,
-        );
+    selection.kind === "up"
+      ? submissions.filter(
+          (submission) => submission.authorMid === selection.mid,
+        )
+      : submissions;
 
   if (followings.length === 0) {
     const empty = document.createElement("p");

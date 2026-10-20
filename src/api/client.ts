@@ -228,6 +228,113 @@ export async function getWorkAuthor(
   return parseWorkAuthor(await fetchJson(url, fetchImpl));
 }
 
+// ---- 原生关注分组(服务器端) ----
+// 字段名按接口文档整理,未逐一在登录态验证过,一律防御式解析:
+// 解析不出来的条目跳过,不抛错,调用方拿到的最多是空结果。
+
+/** tagid<=0 的「特别关注」等隐含分组,以及名字叫「全部/默认分组」的兜底项。 */
+const IMPLICIT_TAG_NAMES = new Set(["全部", "默认分组"]);
+
+export type RelationTag = { tagid: number; name: string };
+
+/** data 可能直接是数组,也可能是 {list:[...]};隐含分组剔除,只留自定义分组。 */
+export function parseRelationTags(body: unknown): RelationTag[] {
+  const data = dataOf(body) ?? asRecord(body)?.data;
+  const list = Array.isArray(data)
+    ? data
+    : Array.isArray(asRecord(data)?.list)
+      ? (asRecord(data)?.list as unknown[])
+      : [];
+  const tags: RelationTag[] = [];
+  for (const entry of list) {
+    const record = asRecord(entry);
+    const tagid = asNumber(record?.tagid);
+    const rawName = asString(record?.name);
+    if (tagid === null || tagid <= 0 || rawName === null) {
+      continue;
+    }
+    const name = rawName.trim();
+    if (name === "" || IMPLICIT_TAG_NAMES.has(name)) {
+      continue;
+    }
+    tags.push({ tagid, name });
+  }
+  return tags;
+}
+
+export async function listRelationTags(
+  fetchImpl: typeof fetch,
+): Promise<RelationTag[]> {
+  return parseRelationTags(
+    await fetchJson("https://api.bilibili.com/x/relation/tags", fetchImpl),
+  );
+}
+
+/** 只取成员 mid(展示用的名字来自关注列表);同样兼容 data 为数组或 {list}。 */
+export function parseGroupMembers(body: unknown): number[] {
+  const data = dataOf(body) ?? asRecord(body)?.data;
+  const list = Array.isArray(data)
+    ? data
+    : Array.isArray(asRecord(data)?.list)
+      ? (asRecord(data)?.list as unknown[])
+      : [];
+  const mids: number[] = [];
+  for (const entry of list) {
+    const mid = asNumber(asRecord(entry)?.mid);
+    if (mid !== null) {
+      mids.push(mid);
+    }
+  }
+  return mids;
+}
+
+export async function listGroupMembers(
+  tagid: number,
+  page: number,
+  fetchImpl: typeof fetch,
+): Promise<number[]> {
+  const url = `https://api.bilibili.com/x/relation/tag?tagid=${tagid}&pn=${page}&ps=50`;
+  return parseGroupMembers(await fetchJson(url, fetchImpl));
+}
+
+async function postRelationTagUsers(
+  action: "addUsers" | "delUsers",
+  mid: number,
+  tagids: number[],
+  csrf: string,
+  fetchImpl: typeof fetch,
+): Promise<boolean> {
+  try {
+    const url = `https://api.bilibili.com/x/relation/tags/${action}?csrf=${encodeURIComponent(csrf)}`;
+    const payload = await fetchJson(url, fetchImpl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `fids=${mid}&tagids=${tagids.join(",")}`,
+    });
+    return asNumber(asRecord(payload)?.code) === 0;
+  } catch {
+    return false;
+  }
+}
+
+export function addUserToGroups(
+  mid: number,
+  tagids: number[],
+  csrf: string,
+  fetchImpl: typeof fetch,
+): Promise<boolean> {
+  return postRelationTagUsers("addUsers", mid, tagids, csrf, fetchImpl);
+}
+
+export function removeUserFromGroups(
+  mid: number,
+  tagids: number[],
+  csrf: string,
+  fetchImpl: typeof fetch,
+): Promise<boolean> {
+  return postRelationTagUsers("delUsers", mid, tagids, csrf, fetchImpl);
+}
+
 export async function followUp(
   mid: number,
   csrf: string,

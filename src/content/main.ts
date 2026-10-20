@@ -18,16 +18,25 @@ import {
 } from "../domain/route.js";
 import type { PageClass } from "../domain/types.js";
 import {
+  addUserToGroups,
   followUp,
   getSession,
   getVideoOwner,
   getWorkAuthor,
   listAllSubmissions,
   listFollowings,
+  listGroupMembers,
+  listRelationTags,
   listUpSubmissions,
   readCsrfToken,
+  removeUserFromGroups,
 } from "../api/client.js";
-import { renderHome, type HomeState } from "../ui/home.js";
+import {
+  renderHome,
+  type HomeSelection,
+  type HomeState,
+  type NativeGroup,
+} from "../ui/home.js";
 import { ensureUiStyle } from "../ui/style.js";
 import { applyWatchPolicy } from "../ui/watch.js";
 
@@ -51,6 +60,8 @@ const ROOT_ID = "follows-root";
 const FOLLOWINGS_MAX_PAGES = 100;
 /** 单次凑满一页时最多再向服务器要多少次,避免坏游标死循环。 */
 const SUBMISSION_MAX_FETCHES = 20;
+/** 拉取一个原生分组成员列表时的翻页上限。 */
+const GROUP_MEMBERS_MAX_PAGES = 100;
 
 const COVER_CSS = [
   "html.follows-only-covered{background:#fff!important}",
@@ -275,6 +286,40 @@ export async function loadSubmissions(
   };
 }
 
+/** 侧栏分组用 B 站原生「关注分组」:先列自定义分组,再逐组翻成员,
+ *  成员可能包含没有关注的人,由渲染层再和关注列表求交集。 */
+export async function loadNativeGroups(
+  fetchImpl: typeof fetch,
+): Promise<NativeGroup[]> {
+  const tags = await listRelationTags(fetchImpl);
+  const groups: NativeGroup[] = [];
+  for (const tag of tags) {
+    const mids: number[] = [];
+    let page = 1;
+    while (page <= GROUP_MEMBERS_MAX_PAGES) {
+      const batch = await listGroupMembers(tag.tagid, page, fetchImpl);
+      mids.push(...batch);
+      if (batch.length < 50) {
+        break;
+      }
+      page += 1;
+    }
+    groups.push({ tagid: tag.tagid, name: tag.name, mids });
+  }
+  return groups;
+}
+
+/** 分组只是侧栏体验,拉不下来就当没有分组,不影响首页本身。 */
+async function loadGroupsBestEffort(
+  fetchImpl: typeof fetch,
+): Promise<NativeGroup[]> {
+  try {
+    return await loadNativeGroups(fetchImpl);
+  } catch {
+    return [];
+  }
+}
+
 export async function start(env: PageEnv): Promise<void> {
   const page = classifyUrl(env.href);
   prepareDocument(env.document, env.href);
@@ -324,11 +369,21 @@ async function dispatch(env: PageEnv, page: PageClass): Promise<void> {
       return;
     case "show-home":
       await ensureFollowState();
-      await runHome(env, followings, null);
+      await runHome(
+        env,
+        followings,
+        await loadGroupsBestEffort(env.fetchImpl),
+        { kind: "all" },
+      );
       return;
     case "show-up":
       await ensureFollowState();
-      await runHome(env, followings, decision.mid);
+      await runHome(
+        env,
+        followings,
+        await loadGroupsBestEffort(env.fetchImpl),
+        { kind: "up", mid: decision.mid },
+      );
       return;
     case "native-stripped":
     case "work-stripped":
@@ -410,27 +465,35 @@ async function loadFeedSlot(
 async function runHome(
   env: PageEnv,
   followings: Following[],
-  selectedMid: number | null,
+  nativeGroups: NativeGroup[],
+  initialSelection: HomeSelection,
 ): Promise<void> {
   clearBody(env.document);
   const root = env.document.createElement("div");
   root.id = ROOT_ID;
   env.document.body.appendChild(root);
 
+  // 分组数据是会话内可变的:移动分组成功后就地更新,避免再拉一遍成员。
+  let groups = nativeGroups;
+
   const upSlots = new Map<number, FeedSlot>();
   const allPromise = loadFeedSlot(env, { scope: "all" });
   const upPromise =
-    selectedMid === null
+    initialSelection.kind !== "up"
       ? null
-      : loadFeedSlot(env, { scope: "up", mid: selectedMid });
+      : loadFeedSlot(env, { scope: "up", mid: initialSelection.mid });
   const allSlot = await allPromise;
-  if (selectedMid !== null && upPromise !== null) {
-    upSlots.set(selectedMid, await upPromise);
+  if (initialSelection.kind === "up" && upPromise !== null) {
+    upSlots.set(initialSelection.mid, await upPromise);
   }
 
-  let currentMid = selectedMid;
+  let selection = initialSelection;
+  // 分组视图从「全部更新」里筛出成员投稿,groupShown 是当前展开到的条数。
+  let groupShown = PAGE_SIZE;
   let playingBvid: string | null = null;
   let loadingMore = false;
+  let movingUp = false;
+  let moveErrorMid: number | null = null;
   let selectionToken = 0;
 
   // 侧栏顺序只用已经拿到的「全部更新」页,再加上当前选中 UP 的已加载投稿。
@@ -438,22 +501,106 @@ async function runHome(
   // 某一页被一个 UP 占满时,没出现在已加载页里的人仍按关注列表原顺序排在后面。
   function rankingSubmissions(): Submission[] {
     const selected =
-      currentMid === null ? [] : (upSlots.get(currentMid)?.items ?? []);
+      selection.kind === "up"
+        ? (upSlots.get(selection.mid)?.items ?? [])
+        : [];
     return [...allSlot.items, ...selected];
   }
 
+  function currentMid(): number | null {
+    return selection.kind === "up" ? selection.mid : null;
+  }
+
   function currentSlot(): FeedSlot | null {
-    if (currentMid === null) {
-      return allSlot;
+    const mid = currentMid();
+    return mid === null ? allSlot : (upSlots.get(mid) ?? null);
+  }
+
+  // 分组视图 = 已加载的「全部更新」里属于该组成员的投稿,截到当前展开数;
+  // 继续看则继续向全量动态要页,新到货的成员投稿自动进入筛选结果。
+  function visibleGroupItems(): Submission[] {
+    if (selection.kind !== "group") {
+      return [];
     }
-    return upSlots.get(currentMid) ?? null;
+    const midset = new Set(selection.mids);
+    return allSlot.items.filter((item) => midset.has(item.authorMid));
+  }
+
+  function currentHasMore(): boolean {
+    if (selection.kind === "group") {
+      return (
+        visibleGroupItems().length > groupShown ||
+        hasMoreSubmissions(allSlot.cursor)
+      );
+    }
+    const slot = currentSlot();
+    return slot !== null && hasMoreSubmissions(slot.cursor);
+  }
+
+  function currentSubmissions(): Submission[] {
+    if (selection.kind === "group") {
+      return visibleGroupItems().slice(0, groupShown);
+    }
+    return currentSlot()?.items ?? [];
+  }
+
+  // 沿「全部更新」游标继续翻页,直到谓词满足、服务器翻完或到安全上限。
+  async function extendAllFeed(
+    token: number,
+    enough: () => boolean,
+  ): Promise<void> {
+    let fetches = 0;
+    while (!enough() && hasMoreSubmissions(allSlot.cursor)) {
+      if (fetches >= SUBMISSION_MAX_FETCHES) {
+        break;
+      }
+      fetches += 1;
+      const page = await loadSubmissions(
+        { scope: "all" },
+        allSlot.cursor,
+        env.fetchImpl,
+      );
+      if (token !== selectionToken) {
+        return;
+      }
+      allSlot.items = newestFirst(
+        collapseParts([...allSlot.items, ...page.items]),
+      );
+      allSlot.cursor = page.cursor;
+    }
   }
 
   async function loadMore(): Promise<void> {
     if (loadingMore) {
       return;
     }
-    const mid = currentMid;
+    const token = selectionToken;
+    if (selection.kind === "group") {
+      if (!currentHasMore()) {
+        return;
+      }
+      loadingMore = true;
+      try {
+        if (visibleGroupItems().length > groupShown) {
+          groupShown += PAGE_SIZE;
+          render({ preserveScroll: true });
+          return;
+        }
+        await extendAllFeed(
+          token,
+          () => visibleGroupItems().length > groupShown,
+        );
+        if (token !== selectionToken) {
+          return;
+        }
+        groupShown += PAGE_SIZE;
+        render({ preserveScroll: true });
+      } finally {
+        loadingMore = false;
+      }
+      return;
+    }
+    const mid = currentMid();
     const slot = currentSlot();
     if (slot === null || !hasMoreSubmissions(slot.cursor)) {
       return;
@@ -465,7 +612,7 @@ async function runHome(
           ? ({ scope: "all" } as const)
           : ({ scope: "up", mid } as const);
       const page = await loadSubmissions(mode, slot.cursor, env.fetchImpl);
-      if (mid !== currentMid) {
+      if (token !== selectionToken) {
         return;
       }
       slot.items = newestFirst(collapseParts([...slot.items, ...page.items]));
@@ -473,6 +620,84 @@ async function runHome(
       render({ preserveScroll: true });
     } finally {
       loadingMore = false;
+    }
+  }
+
+  // 把 UP 移到原生分组:先加进目标组,再移出其余组;选「未分组」=移出所有自定义组。
+  // 任一请求失败即整体失败,并回读服务器分组对齐真实状态;
+  // 本地分组只在全部成功后就地更新,绝不显示假成功。
+  async function moveUpToGroup(
+    mid: number,
+    tagid: number | null,
+  ): Promise<boolean> {
+    if (movingUp) {
+      return false;
+    }
+    movingUp = true;
+    try {
+      const csrf = readCsrfToken(env.cookie);
+      if (csrf === null) {
+        return false;
+      }
+      if (tagid !== null && !groups.some((group) => group.tagid === tagid)) {
+        return false;
+      }
+      const currentIds = groups
+        .filter((group) => group.mids.includes(mid))
+        .map((group) => group.tagid);
+      if (tagid === null) {
+        if (currentIds.length === 0) {
+          return true;
+        }
+        if (
+          !(await removeUserFromGroups(mid, currentIds, csrf, env.fetchImpl))
+        ) {
+          await resyncGroups();
+          return false;
+        }
+        applyLocalMove(mid, null);
+        return true;
+      }
+      if (currentIds.length === 1 && currentIds[0] === tagid) {
+        return true;
+      }
+      const others = currentIds.filter((id) => id !== tagid);
+      if (!(await addUserToGroups(mid, [tagid], csrf, env.fetchImpl))) {
+        return false;
+      }
+      if (
+        others.length > 0 &&
+        !(await removeUserFromGroups(mid, others, csrf, env.fetchImpl))
+      ) {
+        await resyncGroups();
+        return false;
+      }
+      applyLocalMove(mid, tagid);
+      return true;
+    } finally {
+      movingUp = false;
+    }
+  }
+
+  function applyLocalMove(mid: number, tagid: number | null): void {
+    groups = groups.map((group) => ({
+      ...group,
+      mids: group.mids.filter((m) => m !== mid),
+    }));
+    if (tagid !== null) {
+      groups = groups.map((group) =>
+        group.tagid === tagid
+          ? { ...group, mids: [...group.mids, mid] }
+          : group,
+      );
+    }
+  }
+
+  async function resyncGroups(): Promise<void> {
+    try {
+      groups = await loadNativeGroups(env.fetchImpl);
+    } catch {
+      // 回读失败就保留旧分组视图;至少不会把失败显示成成功。
     }
   }
 
@@ -504,34 +729,69 @@ async function runHome(
   function render(options?: { preserveScroll?: boolean }): void {
     const preserved =
       options?.preserveScroll === true ? readScrollTop() : undefined;
-    const slot = currentSlot();
     const state: HomeState = {
       followings: orderFollowings(followings, rankingSubmissions()),
-      submissions: slot?.items ?? [],
-      selectedMid: currentMid,
-      hasMore: slot !== null && hasMoreSubmissions(slot.cursor),
+      groups,
+      submissions: currentSubmissions(),
+      selection,
+      hasMore: currentHasMore(),
       playingBvid,
+      moveErrorMid,
     };
     renderHome(root, state, {
-      onSelect(mid: number | null): void {
-        currentMid = mid;
+      onSelect(next: HomeSelection): void {
+        selection = next;
+        groupShown = PAGE_SIZE;
+        moveErrorMid = null;
         const token = ++selectionToken;
-        if (mid === null || upSlots.has(mid)) {
+        if (next.kind !== "up") {
+          render();
+          if (next.kind === "group") {
+            // 分组刚选中时尽量先凑满一页成员投稿(全量动态里现翻)。
+            void (async () => {
+              try {
+                await extendAllFeed(
+                  token,
+                  () => visibleGroupItems().length >= PAGE_SIZE,
+                );
+                if (token !== selectionToken) {
+                  return;
+                }
+                render();
+              } catch {
+                // 凑页失败时保留当前列表,不恢复 B 站原页面。
+              }
+            })();
+          }
+          return;
+        }
+        if (upSlots.has(next.mid)) {
           render();
           return;
         }
         render();
         void (async () => {
           try {
-            const loaded = await loadFeedSlot(env, { scope: "up", mid });
+            const loaded = await loadFeedSlot(env, {
+              scope: "up",
+              mid: next.mid,
+            });
             if (token !== selectionToken) {
               return;
             }
-            upSlots.set(mid, loaded);
+            upSlots.set(next.mid, loaded);
             render();
           } catch {
             // 选人失败时留在插件自己的页面里,不恢复 B 站原页面。
           }
+        })();
+      },
+      onMoveGroup(mid: number, tagid: number | null): Promise<boolean> {
+        return (async () => {
+          const ok = await moveUpToGroup(mid, tagid);
+          moveErrorMid = ok ? null : mid;
+          render({ preserveScroll: true });
+          return ok;
         })();
       },
       onOpenVideo(bvid: string): void {

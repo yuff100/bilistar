@@ -364,6 +364,66 @@
     }
     return parseWorkAuthor(await fetchJson(url, fetchImpl));
   }
+  var IMPLICIT_TAG_NAMES = /* @__PURE__ */ new Set(["\u5168\u90E8", "\u9ED8\u8BA4\u5206\u7EC4"]);
+  function parseRelationTags(body) {
+    const data = dataOf(body) ?? asRecord(body)?.data;
+    const list = Array.isArray(data) ? data : Array.isArray(asRecord(data)?.list) ? asRecord(data)?.list : [];
+    const tags = [];
+    for (const entry of list) {
+      const record = asRecord(entry);
+      const tagid = asNumber(record?.tagid);
+      const rawName = asString(record?.name);
+      if (tagid === null || tagid <= 0 || rawName === null) {
+        continue;
+      }
+      const name = rawName.trim();
+      if (name === "" || IMPLICIT_TAG_NAMES.has(name)) {
+        continue;
+      }
+      tags.push({ tagid, name });
+    }
+    return tags;
+  }
+  async function listRelationTags(fetchImpl) {
+    return parseRelationTags(
+      await fetchJson("https://api.bilibili.com/x/relation/tags", fetchImpl)
+    );
+  }
+  function parseGroupMembers(body) {
+    const data = dataOf(body) ?? asRecord(body)?.data;
+    const list = Array.isArray(data) ? data : Array.isArray(asRecord(data)?.list) ? asRecord(data)?.list : [];
+    const mids = [];
+    for (const entry of list) {
+      const mid = asNumber(asRecord(entry)?.mid);
+      if (mid !== null) {
+        mids.push(mid);
+      }
+    }
+    return mids;
+  }
+  async function listGroupMembers(tagid, page, fetchImpl) {
+    const url = `https://api.bilibili.com/x/relation/tag?tagid=${tagid}&pn=${page}&ps=50`;
+    return parseGroupMembers(await fetchJson(url, fetchImpl));
+  }
+  async function postRelationTagUsers(action, mid, tagids, csrf, fetchImpl) {
+    try {
+      const url = `https://api.bilibili.com/x/relation/tags/${action}?csrf=${encodeURIComponent(csrf)}`;
+      const payload = await fetchJson(url, fetchImpl, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `fids=${mid}&tagids=${tagids.join(",")}`
+      });
+      return asNumber(asRecord(payload)?.code) === 0;
+    } catch {
+      return false;
+    }
+  }
+  function addUserToGroups(mid, tagids, csrf, fetchImpl) {
+    return postRelationTagUsers("addUsers", mid, tagids, csrf, fetchImpl);
+  }
+  function removeUserFromGroups(mid, tagids, csrf, fetchImpl) {
+    return postRelationTagUsers("delUsers", mid, tagids, csrf, fetchImpl);
+  }
   async function followUp(mid, csrf, fetchImpl) {
     try {
       const body = `fid=${mid}&act=1&re_src=11&csrf=${encodeURIComponent(csrf)}`;
@@ -393,19 +453,24 @@
     `#follows-root>nav>header{display:flex;align-items:center;justify-content:space-between;margin:0 8px 12px}`,
     `#follows-root>nav h1{margin:0;font-size:16px;font-weight:700;color:#18191c}`,
     `#follows-root>nav ul{list-style:none;margin:0;padding:0}`,
-    `#follows-root>nav li[data-follows],#follows-root>nav li[data-follows-mid]{padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#18191c}`,
+    `#follows-root>nav li[data-follows]{padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#18191c}`,
+    `#follows-root>nav li[data-follows-mid]{padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;white-space:nowrap;color:#18191c;display:flex;align-items:center;gap:4px;position:relative}`,
     `#follows-root>nav li[data-follows]:hover,#follows-root>nav li[data-follows-mid]:hover{background:#f6f7f8}`,
     `#follows-root>nav li[aria-current]{background:#fff0f4;color:#fb7299;font-weight:600}`,
     `#follows-root>nav li[aria-current]:hover{background:#fff0f4}`,
-    `#follows-root>nav li[data-tag-group]{padding:12px 10px 2px;font-size:12px;color:#9499a0;cursor:default;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`,
-    `#follows-root>nav li[data-follows-mid]{display:flex;align-items:center;gap:4px}`,
+    `#follows-root>nav li[data-group-id]{padding:12px 10px 2px;font-size:12px;color:#9499a0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`,
+    `#follows-root>nav li[data-group-id]:hover{color:#18191c}`,
+    `#follows-root>nav li[data-group-id][aria-current]{color:#fb7299;font-weight:600}`,
     `#follows-root>nav li[data-follows-mid]>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`,
-    `#follows-root [data-tag-edit]{flex:none;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:#9499a0;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0}`,
-    `#follows-root [data-tag-edit]::after{content:"\u270E"}`,
-    `#follows-root>nav li[data-follows-mid]:hover [data-tag-edit],#follows-root>nav li[data-follows-mid]:focus-within [data-tag-edit],#follows-root [data-tag-edit]:focus{opacity:1}`,
-    `#follows-root [data-tag-edit]:hover{color:#fb7299;background:#fff0f4}`,
-    `#follows-root>nav li[data-tag-editing]{padding:4px 6px}`,
-    `#follows-root [data-tag-input]{width:100%;padding:4px 6px;border:1px solid #fb7299;border-radius:4px;background:#fff;color:#18191c;font-size:13px;font-family:inherit;outline:none}`,
+    `#follows-root [data-group-edit]{flex:none;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:#9499a0;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0}`,
+    `#follows-root [data-group-edit]::after{content:"\u270E"}`,
+    `#follows-root>nav li[data-follows-mid]:hover [data-group-edit],#follows-root>nav li[data-follows-mid]:focus-within [data-group-edit],#follows-root [data-group-edit]:focus{opacity:1}`,
+    `#follows-root [data-group-edit]:hover{color:#fb7299;background:#fff0f4}`,
+    `#follows-root [data-group-picker]{position:absolute;top:100%;right:0;z-index:10;width:max-content;max-width:100%;max-height:240px;overflow-y:auto;padding:4px;display:flex;flex-direction:column;gap:2px;border:1px solid #e3e5e7;border-radius:8px;background:#fff;box-shadow:0 4px 12px rgba(0,0,0,.12)}`,
+    `#follows-root [data-group-picker] button{padding:6px 10px;border:none;border-radius:6px;background:transparent;color:#18191c;font-size:13px;text-align:left;cursor:pointer;white-space:nowrap}`,
+    `#follows-root [data-group-picker] button:hover{background:#f6f7f8;color:#fb7299}`,
+    `#follows-root [data-group-picker] button[aria-current]{color:#fb7299;font-weight:600}`,
+    `#follows-root [data-group-error]{flex:none;color:#f25d8e;font-size:12px}`,
     `#follows-root [data-action="collapse-left"],#follows-root [data-action="collapse-mid"]{flex:none;width:22px;height:22px;margin:0;padding:0;border:1px solid #e3e5e7;border-radius:6px;background:#fff;color:#9499a0;font-size:13px;line-height:1;cursor:pointer}`,
     `#follows-root [data-action="collapse-left"]:hover,#follows-root [data-action="collapse-mid"]:hover{color:#fb7299;border-color:#fb7299}`,
     `#follows-root>button[data-action="restore-left"],#follows-root>button[data-action="restore-mid"]{width:20px;flex:none;padding:0;border:none;background:#fff;color:#fb7299;font-size:14px;cursor:pointer}`,
@@ -478,102 +543,19 @@
     collapse: "\u2039",
     restore: "\u203A"
   };
-  var TAGS_STORAGE_KEY = "follows-only-tags";
-  var TAG_MAX_LENGTH = 12;
-  var TAG_COPY = {
+  var GROUP_COPY = {
     ungrouped: "\u672A\u5206\u7EC4",
-    editLabel: "\u7F16\u8F91\u6807\u7B7E",
-    inputLabel: "\u6253\u6807\u7B7E"
+    editLabel: "\u79FB\u52A8\u5206\u7EC4",
+    moveFailed: "\u79FB\u52A8\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5"
   };
-  var tagEditCacheMap = /* @__PURE__ */ new WeakMap();
-  function tagEditCacheOf(root) {
-    let cache = tagEditCacheMap.get(root);
+  var groupPickerMap = /* @__PURE__ */ new WeakMap();
+  function groupPickerCacheOf(root) {
+    let cache = groupPickerMap.get(root);
     if (cache === void 0) {
-      cache = { editingMid: null };
-      tagEditCacheMap.set(root, cache);
+      cache = { openMid: null };
+      groupPickerMap.set(root, cache);
     }
     return cache;
-  }
-  function storageOf(document2) {
-    try {
-      return document2.defaultView?.localStorage ?? null;
-    } catch {
-      return null;
-    }
-  }
-  function normalizeTag(value) {
-    const tag = value.trim().slice(0, TAG_MAX_LENGTH);
-    return tag === "" ? null : tag;
-  }
-  function readUpTags(storage) {
-    if (storage === null) {
-      return {};
-    }
-    let raw;
-    try {
-      raw = storage.getItem(TAGS_STORAGE_KEY);
-    } catch {
-      return {};
-    }
-    if (raw === null) {
-      return {};
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return {};
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return {};
-    }
-    const tags = {};
-    for (const [mid, value] of Object.entries(parsed)) {
-      if (typeof value !== "string") {
-        continue;
-      }
-      const tag = normalizeTag(value);
-      if (tag !== null) {
-        tags[mid] = tag;
-      }
-    }
-    return tags;
-  }
-  function persistUpTag(storage, mid, tag) {
-    if (storage === null) {
-      return;
-    }
-    const tags = readUpTags(storage);
-    const key = String(mid);
-    if (tag === null) {
-      delete tags[key];
-    } else {
-      tags[key] = tag;
-    }
-    try {
-      storage.setItem(TAGS_STORAGE_KEY, JSON.stringify(tags));
-    } catch {
-    }
-  }
-  function groupFollowings(followings, tags) {
-    const tagged = [];
-    const byTag = /* @__PURE__ */ new Map();
-    const untagged = [];
-    for (const following of followings) {
-      const tag = tags[String(following.mid)];
-      if (tag === void 0) {
-        untagged.push(following);
-        continue;
-      }
-      let group = byTag.get(tag);
-      if (group === void 0) {
-        group = { tag, items: [] };
-        byTag.set(tag, group);
-        tagged.push(group);
-      }
-      group.items.push(following);
-    }
-    return { tagged, untagged };
   }
   function workLinks(mid) {
     return [
@@ -635,10 +617,17 @@
   function renderHome(root, state, handlers) {
     root.id = "follows-root";
     root.textContent = "";
-    const { followings, submissions, selectedMid, hasMore, playingBvid } = state;
+    const {
+      followings,
+      groups,
+      submissions,
+      selection,
+      hasMore,
+      playingBvid,
+      moveErrorMid
+    } = state;
     const cache = paneCacheOf(root);
-    const tagEdit = tagEditCacheOf(root);
-    const tagStorage = storageOf(root.ownerDocument);
+    const picker = groupPickerCacheOf(root);
     ensureUiStyle(root.ownerDocument);
     const rerender = () => {
       const navBefore = root.querySelector("nav");
@@ -688,97 +677,131 @@
     const allItem = document.createElement("li");
     allItem.textContent = HOME_COPY.all;
     allItem.dataset.follows = "all";
-    if (selectedMid === null) {
+    if (selection.kind === "all") {
       allItem.setAttribute("aria-current", "page");
     }
-    allItem.addEventListener("click", () => handlers.onSelect(null));
+    allItem.addEventListener(
+      "click",
+      () => handlers.onSelect({ kind: "all" })
+    );
     followsList.appendChild(allItem);
-    const upTags = readUpTags(tagStorage);
-    const groups = groupFollowings(followings, upTags);
-    const appendTagHeader = (text, tag) => {
+    const groupMidSets = groups.map((group) => new Set(group.mids));
+    const memberFollowings = (index) => followings.filter((following) => groupMidSets[index].has(following.mid));
+    const inAnyGroup = (mid) => groupMidSets.some((mids) => mids.has(mid));
+    const visibleGroups = groups.map((group, index) => ({ group, members: memberFollowings(index) })).filter((section) => section.members.length > 0);
+    const appendGroupHeader = (tagid, text, mids) => {
       const header = document.createElement("li");
+      header.dataset.groupId = tagid === null ? "" : String(tagid);
       header.textContent = text;
-      header.dataset.tagGroup = tag;
+      if (selection.kind === "group" && selection.tagid === tagid) {
+        header.setAttribute("aria-current", "page");
+      }
+      header.addEventListener(
+        "click",
+        () => handlers.onSelect({ kind: "group", tagid, mids })
+      );
       followsList.appendChild(header);
     };
-    const appendFollowing = (following) => {
+    const groupOption = (tagid, text, mid, current) => {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.dataset.groupOption = tagid === null ? "" : String(tagid);
+      option.textContent = text;
+      if (current) {
+        option.setAttribute("aria-current", "true");
+      }
+      option.addEventListener("click", (event) => {
+        event.stopPropagation();
+        picker.openMid = null;
+        void handlers.onMoveGroup(mid, tagid);
+        rerender();
+      });
+      return option;
+    };
+    const appendFollowing = (following, showPicker) => {
       const item = document.createElement("li");
       item.dataset.followsMid = String(following.mid);
-      if (selectedMid === following.mid) {
+      if (selection.kind === "up" && selection.mid === following.mid) {
         item.setAttribute("aria-current", "page");
       }
-      if (tagEdit.editingMid === following.mid) {
-        item.dataset.tagEditing = "";
-        const input = document.createElement("input");
-        input.type = "text";
-        input.value = upTags[String(following.mid)] ?? "";
-        input.maxLength = TAG_MAX_LENGTH;
-        input.dataset.tagInput = String(following.mid);
-        input.setAttribute("aria-label", TAG_COPY.inputLabel);
-        let settled = false;
-        const settle = (commit) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          tagEdit.editingMid = null;
-          if (commit) {
-            persistUpTag(tagStorage, following.mid, normalizeTag(input.value));
-          }
-          rerender();
-        };
-        input.addEventListener("keydown", (event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            settle(true);
-          } else if (event.key === "Escape") {
-            event.preventDefault();
-            settle(false);
-          }
-        });
-        input.addEventListener("blur", () => settle(true));
-        input.addEventListener("click", (event) => event.stopPropagation());
-        item.appendChild(input);
-      } else {
-        const name = document.createElement("span");
-        name.textContent = following.name;
-        item.appendChild(name);
-        const edit = document.createElement("button");
-        edit.type = "button";
-        edit.dataset.tagEdit = String(following.mid);
-        edit.setAttribute("aria-label", TAG_COPY.editLabel);
-        edit.addEventListener("click", (event) => {
-          event.stopPropagation();
-          tagEdit.editingMid = following.mid;
-          rerender();
-          const input = root.querySelector(
-            `[data-tag-input="${following.mid}"]`
+      const name = document.createElement("span");
+      name.textContent = following.name;
+      item.appendChild(name);
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.dataset.groupEdit = String(following.mid);
+      edit.setAttribute("aria-label", GROUP_COPY.editLabel);
+      edit.addEventListener("click", (event) => {
+        event.stopPropagation();
+        picker.openMid = picker.openMid === following.mid ? null : following.mid;
+        rerender();
+      });
+      item.appendChild(edit);
+      if (showPicker) {
+        const popover = document.createElement("div");
+        popover.dataset.groupPicker = String(following.mid);
+        for (const group of groups) {
+          popover.appendChild(
+            groupOption(
+              group.tagid,
+              group.name,
+              following.mid,
+              group.mids.includes(following.mid)
+            )
           );
-          if (input !== null) {
-            input.focus();
-            input.select();
-          }
-        });
-        item.appendChild(edit);
+        }
+        popover.appendChild(
+          groupOption(
+            null,
+            GROUP_COPY.ungrouped,
+            following.mid,
+            !groups.some((group) => group.mids.includes(following.mid))
+          )
+        );
+        item.appendChild(popover);
       }
-      item.addEventListener("click", () => handlers.onSelect(following.mid));
+      if (moveErrorMid === following.mid && picker.openMid !== following.mid) {
+        const error = document.createElement("span");
+        error.dataset.groupError = "";
+        error.textContent = GROUP_COPY.moveFailed;
+        item.appendChild(error);
+      }
+      item.addEventListener(
+        "click",
+        () => handlers.onSelect({ kind: "up", mid: following.mid })
+      );
       followsList.appendChild(item);
     };
-    if (groups.tagged.length === 0) {
+    let pickerAttached = false;
+    const appendFollowingOncePicker = (following) => {
+      const showPicker = picker.openMid === following.mid && !pickerAttached;
+      if (showPicker) {
+        pickerAttached = true;
+      }
+      appendFollowing(following, showPicker);
+    };
+    if (visibleGroups.length === 0) {
       for (const following of followings) {
-        appendFollowing(following);
+        appendFollowingOncePicker(following);
       }
     } else {
-      for (const group of groups.tagged) {
-        appendTagHeader(group.tag, group.tag);
-        for (const following of group.items) {
-          appendFollowing(following);
+      for (const { group, members } of visibleGroups) {
+        appendGroupHeader(group.tagid, group.name, members.map((f) => f.mid));
+        for (const following of members) {
+          appendFollowingOncePicker(following);
         }
       }
-      if (groups.untagged.length > 0) {
-        appendTagHeader(TAG_COPY.ungrouped, "");
-        for (const following of groups.untagged) {
-          appendFollowing(following);
+      const ungrouped = followings.filter(
+        (following) => !inAnyGroup(following.mid)
+      );
+      if (ungrouped.length > 0) {
+        appendGroupHeader(
+          null,
+          GROUP_COPY.ungrouped,
+          ungrouped.map((f) => f.mid)
+        );
+        for (const following of ungrouped) {
+          appendFollowingOncePicker(following);
         }
       }
     }
@@ -811,9 +834,9 @@
     });
     mainHead.appendChild(collapseMid);
     main.appendChild(mainHead);
-    if (selectedMid !== null) {
+    if (selection.kind === "up") {
       const works = document.createElement("nav");
-      for (const { text, href } of workLinks(selectedMid)) {
+      for (const { text, href } of workLinks(selection.mid)) {
         const link = document.createElement("a");
         link.textContent = text;
         link.href = href;
@@ -821,9 +844,9 @@
       }
       main.appendChild(works);
     }
-    const visible = selectedMid === null ? submissions : submissions.filter(
-      (submission) => submission.authorMid === selectedMid
-    );
+    const visible = selection.kind === "up" ? submissions.filter(
+      (submission) => submission.authorMid === selection.mid
+    ) : submissions;
     if (followings.length === 0) {
       const empty = document.createElement("p");
       empty.textContent = HOME_COPY.emptyFollows;
@@ -1036,6 +1059,7 @@
   var ROOT_ID = "follows-root";
   var FOLLOWINGS_MAX_PAGES = 100;
   var SUBMISSION_MAX_FETCHES = 20;
+  var GROUP_MEMBERS_MAX_PAGES = 100;
   var COVER_CSS = [
     "html.follows-only-covered{background:#fff!important}",
     `html.follows-only-covered body>*:not(#${COVER_ID}):not(#${ROOT_ID}):not(#${LOGIN_ID}){display:none!important}`,
@@ -1215,6 +1239,31 @@
       }
     };
   }
+  async function loadNativeGroups(fetchImpl) {
+    const tags = await listRelationTags(fetchImpl);
+    const groups = [];
+    for (const tag of tags) {
+      const mids = [];
+      let page = 1;
+      while (page <= GROUP_MEMBERS_MAX_PAGES) {
+        const batch = await listGroupMembers(tag.tagid, page, fetchImpl);
+        mids.push(...batch);
+        if (batch.length < 50) {
+          break;
+        }
+        page += 1;
+      }
+      groups.push({ tagid: tag.tagid, name: tag.name, mids });
+    }
+    return groups;
+  }
+  async function loadGroupsBestEffort(fetchImpl) {
+    try {
+      return await loadNativeGroups(fetchImpl);
+    } catch {
+      return [];
+    }
+  }
   async function start(env) {
     const page = classifyUrl(env.href);
     prepareDocument(env.document, env.href);
@@ -1259,11 +1308,21 @@
         return;
       case "show-home":
         await ensureFollowState();
-        await runHome(env, followings, null);
+        await runHome(
+          env,
+          followings,
+          await loadGroupsBestEffort(env.fetchImpl),
+          { kind: "all" }
+        );
         return;
       case "show-up":
         await ensureFollowState();
-        await runHome(env, followings, decision.mid);
+        await runHome(
+          env,
+          followings,
+          await loadGroupsBestEffort(env.fetchImpl),
+          { kind: "up", mid: decision.mid }
+        );
         return;
       case "native-stripped":
       case "work-stripped":
@@ -1328,37 +1387,109 @@
     const page = await loadSubmissions(mode, null, env.fetchImpl);
     return { items: page.items, cursor: page.cursor };
   }
-  async function runHome(env, followings, selectedMid) {
+  async function runHome(env, followings, nativeGroups, initialSelection) {
     clearBody(env.document);
     const root = env.document.createElement("div");
     root.id = ROOT_ID;
     env.document.body.appendChild(root);
+    let groups = nativeGroups;
     const upSlots = /* @__PURE__ */ new Map();
     const allPromise = loadFeedSlot(env, { scope: "all" });
-    const upPromise = selectedMid === null ? null : loadFeedSlot(env, { scope: "up", mid: selectedMid });
+    const upPromise = initialSelection.kind !== "up" ? null : loadFeedSlot(env, { scope: "up", mid: initialSelection.mid });
     const allSlot = await allPromise;
-    if (selectedMid !== null && upPromise !== null) {
-      upSlots.set(selectedMid, await upPromise);
+    if (initialSelection.kind === "up" && upPromise !== null) {
+      upSlots.set(initialSelection.mid, await upPromise);
     }
-    let currentMid = selectedMid;
+    let selection = initialSelection;
+    let groupShown = PAGE_SIZE;
     let playingBvid = null;
     let loadingMore = false;
+    let movingUp = false;
+    let moveErrorMid = null;
     let selectionToken = 0;
     function rankingSubmissions() {
-      const selected = currentMid === null ? [] : upSlots.get(currentMid)?.items ?? [];
+      const selected = selection.kind === "up" ? upSlots.get(selection.mid)?.items ?? [] : [];
       return [...allSlot.items, ...selected];
     }
+    function currentMid() {
+      return selection.kind === "up" ? selection.mid : null;
+    }
     function currentSlot() {
-      if (currentMid === null) {
-        return allSlot;
+      const mid = currentMid();
+      return mid === null ? allSlot : upSlots.get(mid) ?? null;
+    }
+    function visibleGroupItems() {
+      if (selection.kind !== "group") {
+        return [];
       }
-      return upSlots.get(currentMid) ?? null;
+      const midset = new Set(selection.mids);
+      return allSlot.items.filter((item) => midset.has(item.authorMid));
+    }
+    function currentHasMore() {
+      if (selection.kind === "group") {
+        return visibleGroupItems().length > groupShown || hasMoreSubmissions(allSlot.cursor);
+      }
+      const slot = currentSlot();
+      return slot !== null && hasMoreSubmissions(slot.cursor);
+    }
+    function currentSubmissions() {
+      if (selection.kind === "group") {
+        return visibleGroupItems().slice(0, groupShown);
+      }
+      return currentSlot()?.items ?? [];
+    }
+    async function extendAllFeed(token, enough) {
+      let fetches = 0;
+      while (!enough() && hasMoreSubmissions(allSlot.cursor)) {
+        if (fetches >= SUBMISSION_MAX_FETCHES) {
+          break;
+        }
+        fetches += 1;
+        const page = await loadSubmissions(
+          { scope: "all" },
+          allSlot.cursor,
+          env.fetchImpl
+        );
+        if (token !== selectionToken) {
+          return;
+        }
+        allSlot.items = newestFirst(
+          collapseParts([...allSlot.items, ...page.items])
+        );
+        allSlot.cursor = page.cursor;
+      }
     }
     async function loadMore() {
       if (loadingMore) {
         return;
       }
-      const mid = currentMid;
+      const token = selectionToken;
+      if (selection.kind === "group") {
+        if (!currentHasMore()) {
+          return;
+        }
+        loadingMore = true;
+        try {
+          if (visibleGroupItems().length > groupShown) {
+            groupShown += PAGE_SIZE;
+            render({ preserveScroll: true });
+            return;
+          }
+          await extendAllFeed(
+            token,
+            () => visibleGroupItems().length > groupShown
+          );
+          if (token !== selectionToken) {
+            return;
+          }
+          groupShown += PAGE_SIZE;
+          render({ preserveScroll: true });
+        } finally {
+          loadingMore = false;
+        }
+        return;
+      }
+      const mid = currentMid();
       const slot = currentSlot();
       if (slot === null || !hasMoreSubmissions(slot.cursor)) {
         return;
@@ -1367,7 +1498,7 @@
       try {
         const mode = mid === null ? { scope: "all" } : { scope: "up", mid };
         const page = await loadSubmissions(mode, slot.cursor, env.fetchImpl);
-        if (mid !== currentMid) {
+        if (token !== selectionToken) {
           return;
         }
         slot.items = newestFirst(collapseParts([...slot.items, ...page.items]));
@@ -1375,6 +1506,65 @@
         render({ preserveScroll: true });
       } finally {
         loadingMore = false;
+      }
+    }
+    async function moveUpToGroup(mid, tagid) {
+      if (movingUp) {
+        return false;
+      }
+      movingUp = true;
+      try {
+        const csrf = readCsrfToken(env.cookie);
+        if (csrf === null) {
+          return false;
+        }
+        if (tagid !== null && !groups.some((group) => group.tagid === tagid)) {
+          return false;
+        }
+        const currentIds = groups.filter((group) => group.mids.includes(mid)).map((group) => group.tagid);
+        if (tagid === null) {
+          if (currentIds.length === 0) {
+            return true;
+          }
+          if (!await removeUserFromGroups(mid, currentIds, csrf, env.fetchImpl)) {
+            await resyncGroups();
+            return false;
+          }
+          applyLocalMove(mid, null);
+          return true;
+        }
+        if (currentIds.length === 1 && currentIds[0] === tagid) {
+          return true;
+        }
+        const others = currentIds.filter((id) => id !== tagid);
+        if (!await addUserToGroups(mid, [tagid], csrf, env.fetchImpl)) {
+          return false;
+        }
+        if (others.length > 0 && !await removeUserFromGroups(mid, others, csrf, env.fetchImpl)) {
+          await resyncGroups();
+          return false;
+        }
+        applyLocalMove(mid, tagid);
+        return true;
+      } finally {
+        movingUp = false;
+      }
+    }
+    function applyLocalMove(mid, tagid) {
+      groups = groups.map((group) => ({
+        ...group,
+        mids: group.mids.filter((m) => m !== mid)
+      }));
+      if (tagid !== null) {
+        groups = groups.map(
+          (group) => group.tagid === tagid ? { ...group, mids: [...group.mids, mid] } : group
+        );
+      }
+    }
+    async function resyncGroups() {
+      try {
+        groups = await loadNativeGroups(env.fetchImpl);
+      } catch {
       }
     }
     function scrollContainer() {
@@ -1401,33 +1591,66 @@
     }
     function render(options) {
       const preserved = options?.preserveScroll === true ? readScrollTop() : void 0;
-      const slot = currentSlot();
       const state = {
         followings: orderFollowings(followings, rankingSubmissions()),
-        submissions: slot?.items ?? [],
-        selectedMid: currentMid,
-        hasMore: slot !== null && hasMoreSubmissions(slot.cursor),
-        playingBvid
+        groups,
+        submissions: currentSubmissions(),
+        selection,
+        hasMore: currentHasMore(),
+        playingBvid,
+        moveErrorMid
       };
       renderHome(root, state, {
-        onSelect(mid) {
-          currentMid = mid;
+        onSelect(next) {
+          selection = next;
+          groupShown = PAGE_SIZE;
+          moveErrorMid = null;
           const token = ++selectionToken;
-          if (mid === null || upSlots.has(mid)) {
+          if (next.kind !== "up") {
+            render();
+            if (next.kind === "group") {
+              void (async () => {
+                try {
+                  await extendAllFeed(
+                    token,
+                    () => visibleGroupItems().length >= PAGE_SIZE
+                  );
+                  if (token !== selectionToken) {
+                    return;
+                  }
+                  render();
+                } catch {
+                }
+              })();
+            }
+            return;
+          }
+          if (upSlots.has(next.mid)) {
             render();
             return;
           }
           render();
           void (async () => {
             try {
-              const loaded = await loadFeedSlot(env, { scope: "up", mid });
+              const loaded = await loadFeedSlot(env, {
+                scope: "up",
+                mid: next.mid
+              });
               if (token !== selectionToken) {
                 return;
               }
-              upSlots.set(mid, loaded);
+              upSlots.set(next.mid, loaded);
               render();
             } catch {
             }
+          })();
+        },
+        onMoveGroup(mid, tagid) {
+          return (async () => {
+            const ok = await moveUpToGroup(mid, tagid);
+            moveErrorMid = ok ? null : mid;
+            render({ preserveScroll: true });
+            return ok;
           })();
         },
         onOpenVideo(bvid) {

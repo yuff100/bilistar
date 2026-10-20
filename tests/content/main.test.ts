@@ -52,6 +52,10 @@ type WorldState = {
   modifyCode: number;
   spaceOffset: string;
   spaceItems: unknown[] | null;
+  relationTags: Array<{ tagid: number; name: string }>;
+  relationMembers: Record<number, number[]>;
+  addUsersCode: number;
+  delUsersCode: number;
 };
 
 function makeWorld(href: string, overrides: Partial<WorldState> = {}) {
@@ -72,6 +76,10 @@ function makeWorld(href: string, overrides: Partial<WorldState> = {}) {
     modifyCode: 0,
     spaceOffset: "",
     spaceItems: null,
+    relationTags: [],
+    relationMembers: {},
+    addUsersCode: 0,
+    delUsersCode: 0,
     ...overrides,
   };
 
@@ -82,6 +90,25 @@ function makeWorld(href: string, overrides: Partial<WorldState> = {}) {
         return state.loggedIn
           ? { code: 0, data: { isLogin: true, mid: state.viewerMid } }
           : { code: 0, data: { isLogin: false } };
+      }
+      if (url.includes("/x/relation/tags/addUsers")) {
+        return { code: state.addUsersCode };
+      }
+      if (url.includes("/x/relation/tags/delUsers")) {
+        return { code: state.delUsersCode };
+      }
+      if (url.includes("/x/relation/tags")) {
+        return { code: 0, data: state.relationTags };
+      }
+      if (url.includes("/x/relation/tag?")) {
+        const match = /tagid=(\d+)/.exec(url);
+        const tagid = match === null ? 0 : Number(match[1]);
+        return {
+          code: 0,
+          data: {
+            list: (state.relationMembers[tagid] ?? []).map((mid) => ({ mid })),
+          },
+        };
       }
       if (url.includes("/x/relation/followings")) {
         return {
@@ -406,9 +433,11 @@ describe("start", () => {
     expect(cards).toEqual(["BVUP3", "BVUP2"]);
   });
 
-  it("首页侧栏按 localStorage 里的标签分组，未分组排在最后", async () => {
-    localStorage.setItem("follows-only-tags", JSON.stringify({ "2": "影视" }));
-    const world = makeWorld("https://www.bilibili.com/");
+  it("首页侧栏按 B 站原生关注分组排列，未分组排在最后", async () => {
+    const world = makeWorld("https://www.bilibili.com/", {
+      relationTags: [{ tagid: 10, name: "影视" }],
+      relationMembers: { 10: [2] },
+    });
 
     await start(world.env);
 
@@ -421,11 +450,57 @@ describe("start", () => {
       if (li.hasAttribute("data-follows-mid")) {
         return `mid:${li.getAttribute("data-follows-mid")}`;
       }
-      return `tag:${li.getAttribute("data-tag-group") ?? ""}`;
+      return `group:${li.getAttribute("data-group-id") ?? ""}`;
     });
-    // 动态排序把刚更新的 3 号 UP 放在关注列表前面，
-    // 但 2 号打了「影视」标签，随分组整体靠前，3 号落进「未分组」。
-    expect(entries).toEqual(["all", "tag:影视", "mid:2", "tag:", "mid:3"]);
+    expect(entries).toEqual(["all", "group:10", "mid:2", "group:", "mid:3"]);
+    expect(
+      document.querySelector('#follows-root [data-group-id="10"]')?.textContent,
+    ).toBe("影视");
+  });
+
+  it("点分组头后中栏只显示该组成员的投稿", async () => {
+    const world = makeWorld("https://www.bilibili.com/", {
+      relationTags: [{ tagid: 10, name: "影视" }],
+      relationMembers: { 10: [2] },
+    });
+
+    await start(world.env);
+    (document.querySelector('[data-group-id="10"]') as HTMLElement).click();
+    await settle();
+
+    const cards = [
+      ...document.querySelectorAll("#follows-root main [data-bvid]"),
+    ].map((node) => node.getAttribute("data-bvid"));
+    expect(cards).toEqual(["BVUP2"]);
+  });
+
+  it("移动分组成功后侧栏立刻按新组重排", async () => {
+    const world = makeWorld("https://www.bilibili.com/", {
+      relationTags: [{ tagid: 10, name: "影视" }],
+      relationMembers: { 10: [2] },
+    });
+
+    await start(world.env);
+    (
+      document.querySelector(
+        '[data-group-edit="3"]',
+      ) as HTMLButtonElement
+    ).click();
+    (
+      document.querySelector(
+        '[data-group-option="10"]',
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+
+    const mids = [
+      ...document.querySelectorAll("#follows-root li[data-follows-mid]"),
+    ].map((node) => node.getAttribute("data-follows-mid"));
+    expect(new Set(mids)).toEqual(new Set(["2", "3"]));
+    expect(document.querySelector('[data-group-id=""]')).toBeNull();
+    expect(world.fetchMock.mock.calls.some(([url]) =>
+      String(url).includes("/x/relation/tags/addUsers"),
+    )).toBe(true);
   });
 
   it("首页点投稿卡片时在右侧窗格内嵌播放，不离开首页", async () => {
@@ -990,8 +1065,8 @@ describe("extension manifest", () => {
     expect(manifest.name).toBe("只看关注");
   });
 
-  it("版本号是 0.9.0", () => {
-    expect(manifest.version).toBe("0.9.0");
+  it("版本号是 1.0.0", () => {
+    expect(manifest.version).toBe("1.0.0");
   });
 
   it("不申请 cookies 或 storage 权限", () => {
@@ -999,7 +1074,7 @@ describe("extension manifest", () => {
     expect(manifest.permissions ?? []).not.toContain("storage");
   });
 
-  it("不申请任何 permissions(标签分组只落在页面 localStorage)", () => {
+  it("不申请任何 permissions(分组走页面登录态请求)", () => {
     expect(manifest.permissions ?? []).toEqual([]);
   });
 
