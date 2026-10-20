@@ -948,6 +948,7 @@ describe("extension manifest", () => {
   type Manifest = {
     manifest_version: number;
     name: string;
+    version: string;
     permissions?: string[];
     content_scripts: Array<{
       matches: string[];
@@ -964,6 +965,10 @@ describe("extension manifest", () => {
   it("是 MV3 清单，名字为「只看关注」", () => {
     expect(manifest.manifest_version).toBe(3);
     expect(manifest.name).toBe("只看关注");
+  });
+
+  it("版本号是 0.3.0", () => {
+    expect(manifest.version).toBe("0.3.0");
   });
 
   it("不申请 cookies 或 storage 权限", () => {

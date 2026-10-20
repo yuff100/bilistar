@@ -16,6 +16,7 @@ export const REMOVE_SELECTORS: {
     ".recommend-list-container",
     ".bpx-player-ending-wrap",
     ".bpx-player-ending-related",
+    ".next-play",
   ],
   unfollowed: [
     "#biliMainHeader",
@@ -25,6 +26,7 @@ export const REMOVE_SELECTORS: {
     ".recommend-list-container",
     ".bpx-player-ending-wrap",
     ".bpx-player-ending-related",
+    ".next-play",
     "#comment",
     "#commentapp",
     "bili-comments",

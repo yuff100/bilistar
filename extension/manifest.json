@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "只看关注",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "B 站浏览器插件：首页、空间、视频与稿件页只保留关注内容。",
   "content_scripts": [
     {

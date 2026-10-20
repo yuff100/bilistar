@@ -662,7 +662,8 @@
       ".rec-footer",
       ".recommend-list-container",
       ".bpx-player-ending-wrap",
-      ".bpx-player-ending-related"
+      ".bpx-player-ending-related",
+      ".next-play"
     ],
     unfollowed: [
       "#biliMainHeader",
@@ -672,6 +673,7 @@
       ".recommend-list-container",
       ".bpx-player-ending-wrap",
       ".bpx-player-ending-related",
+      ".next-play",
       "#comment",
       "#commentapp",
       "bili-comments",

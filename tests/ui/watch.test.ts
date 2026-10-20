@@ -36,6 +36,7 @@ function buildWatchDocument(): void {
     <div class="video-toolbar-left"></div>
     <div id="reco_list"></div>
     <div class="bpx-player-ending-wrap"></div>
+    <div class="next-play"><div class="rec-title">接下来播放</div></div>
     <ul id="fav-list"></ul>
   `;
 }
@@ -55,6 +56,7 @@ describe("REMOVE_SELECTORS", () => {
         ".recommend-list-container",
         ".bpx-player-ending-wrap",
         ".bpx-player-ending-related",
+        ".next-play",
       ],
       unfollowed: [
         "#biliMainHeader",
@@ -64,6 +66,7 @@ describe("REMOVE_SELECTORS", () => {
         ".recommend-list-container",
         ".bpx-player-ending-wrap",
         ".bpx-player-ending-related",
+        ".next-play",
         "#comment",
         "#commentapp",
         "bili-comments",
@@ -90,6 +93,7 @@ describe("applyWatchPolicy", () => {
     expect(document.querySelector("#biliMainHeader")).toBeNull();
     expect(document.querySelector("#reco_list")).toBeNull();
     expect(document.querySelector(".bpx-player-ending-wrap")).toBeNull();
+    expect(document.querySelector(".next-play")).toBeNull();
 
     expect(document.querySelector("video")).not.toBeNull();
     expect(document.querySelector("#comment")).not.toBeNull();
@@ -158,6 +162,7 @@ describe("applyWatchPolicy", () => {
     expect(document.querySelector("#comment")).toBeNull();
     expect(document.querySelector(".video-toolbar-left")).toBeNull();
     expect(document.querySelector("#reco_list")).toBeNull();
+    expect(document.querySelector(".next-play")).toBeNull();
     expect(document.querySelector("#biliMainHeader")).toBeNull();
     expect(document.querySelector("#follows-up-videos")).toBeNull();
 
@@ -178,5 +183,6 @@ describe("applyWatchPolicy", () => {
     expect(document.querySelector('a[href="/v/popular/rank/all"]')).toBeNull();
     expect(document.querySelector("video")).not.toBeNull();
     expect(document.querySelector("#fav-list")).not.toBeNull();
+    expect(document.querySelector(".next-play")).not.toBeNull();
   });
 });
