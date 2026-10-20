@@ -967,8 +967,8 @@ describe("extension manifest", () => {
     expect(manifest.name).toBe("只看关注");
   });
 
-  it("版本号是 0.4.0", () => {
-    expect(manifest.version).toBe("0.4.0");
+  it("版本号是 0.5.0", () => {
+    expect(manifest.version).toBe("0.5.0");
   });
 
   it("不申请 cookies 或 storage 权限", () => {
