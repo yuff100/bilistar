@@ -1,5 +1,15 @@
 import type { Following, Submission } from "../domain/feed.js";
 import { ensureUiStyle } from "./style.js";
+import {
+  groupKey,
+  isCollapsed,
+  moveBefore,
+  orderBy,
+  readSidebarLayout,
+  toggleCollapsed,
+  writeSidebarLayout,
+  type SidebarLayout,
+} from "./sidebar-layout.js";
 
 /** 原生关注分组:服务器端的自定义分组(tagid>0),mids 是该组的全部成员,
  *  可能包含没有关注的人——侧栏渲染时再和关注列表求交集。 */
@@ -68,10 +78,14 @@ export const PLAYER_COPY = {
 //   button[data-group-option="<tagid>"] 浮层里的组选项;「未分组」的值为空串;
 //                                 当前所在组带 aria-current="true"
 //   span[data-group-error]        移动失败的提示文本
+//   button[data-group-toggle]     折叠/展开该组;不选中分组
+//   li[data-in-group]             该行所属组(自定义组 tagid,未分组为空串)
 export const GROUP_COPY = {
   ungrouped: "未分组",
   editLabel: "移动分组",
   moveFailed: "移动失败，请重试",
+  collapseLabel: "折叠分组",
+  expandLabel: "展开分组",
 } as const;
 
 type GroupPickerCache = {
@@ -128,48 +142,48 @@ function paneCacheOf(root: HTMLElement): PaneCache {
 }
 
 function embedUrl(bvid: string): string {
-  return `https://www.bilibili.com/blackboard/html5mobileplayer.html?bvid=${bvid}&danmaku=1&autoplay=1`;
-}
-
-// ---- H5 播放器控制条常显 ----
-// html5mobileplayer 在我们的窄栏里会误判为移动场景,给 .mplayer-display 挂上
-// .mplayer-control-bar-hide 后控制条/顶栏就再不出现。嵌入页与主站同源,
-// 可以直接往 iframe.contentDocument 注入一段 !important 覆盖样式强制常显。
-// 样式元素随 iframe 文档存续,跨重绘保活(同一个 iframe 被重新挂载)不需要重注;
-// 换 bvid 重建 iframe 或 iframe 重新 load 时再补一次。
-export const PLAYER_CHROME_STYLE_ID = "follows-only-player-chrome";
-
-const PLAYER_CHROME_CSS = [
-  ".mplayer .mplayer-control-bar-hide .mplayer-control-bar,",
-  ".mplayer .mplayer-control-bar-hide .mplayer-right,",
-  ".mplayer-display.mplayer-control-bar-hide .mplayer-top {",
-  "opacity: 1 !important;",
-  "transform: none !important;",
-  "visibility: visible !important;",
-  "}",
-].join("");
-
-function injectPlayerChromeStyle(frame: HTMLIFrameElement): void {
-  try {
-    const doc = frame.contentDocument;
-    if (doc === null) {
-      return;
-    }
-    if (doc.getElementById(PLAYER_CHROME_STYLE_ID) !== null) {
-      return;
-    }
-    const style = doc.createElement("style");
-    style.id = PLAYER_CHROME_STYLE_ID;
-    style.textContent = PLAYER_CHROME_CSS;
-    (doc.head ?? doc.documentElement).appendChild(style);
-  } catch {
-    // 跨域或文档尚未就绪时 contentDocument 会抛错/为 null,静默放弃;
-    // load 事件里会再试一次。
-  }
+  // 桌面版同源 H5 播放器:清晰度/倍速/设置都是页内面板。
+  // 移动版 html5mobileplayer 根本不渲染这些按钮,覆盖样式也变不出来。
+  return `https://www.bilibili.com/blackboard/html5player.html?bvid=${bvid}&danmaku=1&autoplay=1`;
 }
 
 function videoUrl(bvid: string): string {
   return `https://www.bilibili.com/video/${bvid}`;
+}
+
+function pageStorage(root: HTMLElement): Storage | null {
+  try {
+    return root.ownerDocument.defaultView?.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+let activeDrag = "";
+
+function dragPayload(data: DataTransfer | null | undefined): string {
+  const fromTransfer = data?.getData("text/plain") ?? "";
+  return fromTransfer !== "" ? fromTransfer : activeDrag;
+}
+
+function setDragPayload(
+  data: DataTransfer | null | undefined,
+  value: string,
+): void {
+  activeDrag = value;
+  if (data == null) {
+    return;
+  }
+  data.setData("text/plain", value);
+  try {
+    data.effectAllowed = "move";
+  } catch {
+    // happy-dom / 部分环境的 DataTransfer 没有 effectAllowed。
+  }
+}
+
+function clearDragPayload(): void {
+  activeDrag = "";
 }
 
 export function renderHome(
@@ -191,6 +205,8 @@ export function renderHome(
   } = state;
   const cache = paneCacheOf(root);
   const picker = groupPickerCacheOf(root);
+  const storage = pageStorage(root);
+  let layout = readSidebarLayout(storage);
 
   ensureUiStyle(root.ownerDocument);
 
@@ -201,6 +217,7 @@ export function renderHome(
     const mainBefore = root.querySelector("main");
     const navTop = navBefore instanceof HTMLElement ? navBefore.scrollTop : 0;
     const mainTop = mainBefore instanceof HTMLElement ? mainBefore.scrollTop : 0;
+    writeSidebarLayout(storage, layout);
     renderHome(root, state, handlers);
     const navAfter = root.querySelector("nav");
     const mainAfter = root.querySelector("main");
@@ -256,32 +273,126 @@ export function renderHome(
   );
   followsList.appendChild(allItem);
 
-  // 侧栏分组:自定义组按接口顺序排,组内只列已关注的成员
-  // (组里没有关注任何人就整组隐藏);没进任何自定义组的关注进「未分组」垫底。
+  // 侧栏分组:自定义组默认按接口顺序,用户拖过之后跟 groupOrder;
+  // 组内只列已关注的成员(组里没有关注任何人就整组隐藏);
+  // 没进任何自定义组的关注进「未分组」垫底,未分组不能拖到自定义组之间。
   // 一个自定义组都用不上时保持旧版扁平列表,不画组头。
+  // 折叠与排序只改本机偏好,不改 B 站服务器上的分组成员。
   const groupMidSets = groups.map((group) => new Set(group.mids));
   const memberFollowings = (index: number): Following[] =>
     followings.filter((following) => groupMidSets[index]!.has(following.mid));
   const inAnyGroup = (mid: number): boolean =>
     groupMidSets.some((mids) => mids.has(mid));
-  const visibleGroups = groups
-    .map((group, index) => ({ group, members: memberFollowings(index) }))
-    .filter((section) => section.members.length > 0);
+  const visibleGroups = orderBy(
+    groups
+      .map((group, index) => ({ group, members: memberFollowings(index) }))
+      .filter((section) => section.members.length > 0),
+    layout.groupOrder,
+    (section) => section.group.tagid,
+  );
+
+  const persistLayout = (next: SidebarLayout): void => {
+    layout = next;
+    writeSidebarLayout(storage, next);
+    rerender();
+  };
+
+  const markDragOver = (item: HTMLElement, on: boolean): void => {
+    if (on) {
+      item.dataset.dragOver = "";
+    } else {
+      delete item.dataset.dragOver;
+    }
+  };
+
+  const bindDropTarget = (
+    item: HTMLElement,
+    onDrop: (payload: string) => void,
+  ): void => {
+    item.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      try {
+        if (event.dataTransfer != null) {
+          event.dataTransfer.dropEffect = "move";
+        }
+      } catch {
+        // 同上,dropEffect 不是放下的前提。
+      }
+      markDragOver(item, true);
+    });
+    item.addEventListener("dragleave", () => {
+      markDragOver(item, false);
+    });
+    item.addEventListener("drop", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      markDragOver(item, false);
+      const payload = dragPayload(event.dataTransfer);
+      clearDragPayload();
+      onDrop(payload);
+    });
+    item.addEventListener("dragend", () => {
+      clearDragPayload();
+      markDragOver(item, false);
+    });
+  };
 
   const appendGroupHeader = (
     tagid: number | null,
     text: string,
     mids: number[],
   ): void => {
+    const key = groupKey(tagid);
+    const collapsed = isCollapsed(layout, key);
     const header = document.createElement("li");
-    header.dataset.groupId = tagid === null ? "" : String(tagid);
-    header.textContent = text;
+    header.dataset.groupId = key;
     if (selection.kind === "group" && selection.tagid === tagid) {
       header.setAttribute("aria-current", "page");
     }
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.dataset.groupToggle = key;
+    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    toggle.setAttribute(
+      "aria-label",
+      collapsed ? GROUP_COPY.expandLabel : GROUP_COPY.collapseLabel,
+    );
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      persistLayout(toggleCollapsed(layout, key));
+    });
+
+    const label = document.createElement("span");
+    label.textContent = text;
+    header.appendChild(toggle);
+    header.appendChild(label);
     header.addEventListener("click", () =>
       handlers.onSelect({ kind: "group", tagid, mids }),
     );
+
+    if (tagid !== null) {
+      header.draggable = true;
+      header.addEventListener("dragstart", (event) => {
+        event.stopPropagation();
+        setDragPayload(event.dataTransfer, `group:${tagid}`);
+      });
+      bindDropTarget(header, (payload) => {
+        if (!payload.startsWith("group:")) {
+          return;
+        }
+        const from = Number(payload.slice("group:".length));
+        if (!Number.isFinite(from) || from === tagid) {
+          return;
+        }
+        const current = visibleGroups.map((section) => section.group.tagid);
+        persistLayout({
+          ...layout,
+          groupOrder: moveBefore(current, from, tagid),
+        });
+      });
+    }
+
     followsList.appendChild(header);
   };
 
@@ -313,9 +424,15 @@ export function renderHome(
   const appendFollowing = (
     following: Following,
     showPicker: boolean,
+    inGroup: string,
+    collapsed: boolean,
+    neighborMids: number[],
   ): void => {
     const item = document.createElement("li");
     item.dataset.followsMid = String(following.mid);
+    item.dataset.inGroup = inGroup;
+    item.hidden = collapsed;
+    item.draggable = true;
     if (selection.kind === "up" && selection.mid === following.mid) {
       item.setAttribute("aria-current", "page");
     }
@@ -372,41 +489,95 @@ export function renderHome(
     item.addEventListener("click", () =>
       handlers.onSelect({ kind: "up", mid: following.mid }),
     );
+    item.addEventListener("dragstart", (event) => {
+      event.stopPropagation();
+      setDragPayload(
+        event.dataTransfer,
+        `member:${inGroup}:${following.mid}`,
+      );
+    });
+    bindDropTarget(item, (payload) => {
+      const match = /^member:([^:]*):(\d+)$/.exec(payload);
+      if (match === null || match[1] !== inGroup) {
+        return;
+      }
+      const from = Number(match[2]);
+      if (!Number.isFinite(from) || from === following.mid) {
+        return;
+      }
+      persistLayout({
+        ...layout,
+        memberOrder: {
+          ...layout.memberOrder,
+          [inGroup]: moveBefore(neighborMids, from, following.mid),
+        },
+      });
+    });
     followsList.appendChild(item);
   };
 
   let pickerAttached = false;
-  const appendFollowingOncePicker = (following: Following): void => {
+  const appendFollowingOncePicker = (
+    following: Following,
+    inGroup: string,
+    collapsed: boolean,
+    neighborMids: number[],
+  ): void => {
     const showPicker =
       picker.openMid === following.mid && !pickerAttached;
     if (showPicker) {
       pickerAttached = true;
     }
-    appendFollowing(following, showPicker);
+    appendFollowing(
+      following,
+      showPicker,
+      inGroup,
+      collapsed,
+      neighborMids,
+    );
   };
 
   if (visibleGroups.length === 0) {
-    for (const following of followings) {
-      appendFollowingOncePicker(following);
+    const ordered = orderBy(
+      followings,
+      layout.memberOrder[groupKey(null)] ?? [],
+      (following) => following.mid,
+    );
+    const neighborMids = ordered.map((following) => following.mid);
+    for (const following of ordered) {
+      appendFollowingOncePicker(following, groupKey(null), false, neighborMids);
     }
   } else {
     for (const { group, members } of visibleGroups) {
-      appendGroupHeader(group.tagid, group.name, members.map((f) => f.mid));
-      for (const following of members) {
-        appendFollowingOncePicker(following);
+      const key = groupKey(group.tagid);
+      const ordered = orderBy(
+        members,
+        layout.memberOrder[key] ?? [],
+        (following) => following.mid,
+      );
+      const neighborMids = ordered.map((following) => following.mid);
+      appendGroupHeader(group.tagid, group.name, neighborMids);
+      const collapsed = isCollapsed(layout, key);
+      for (const following of ordered) {
+        appendFollowingOncePicker(following, key, collapsed, neighborMids);
       }
     }
-    const ungrouped = followings.filter(
-      (following) => !inAnyGroup(following.mid),
+    const ungrouped = orderBy(
+      followings.filter((following) => !inAnyGroup(following.mid)),
+      layout.memberOrder[groupKey(null)] ?? [],
+      (following) => following.mid,
     );
     if (ungrouped.length > 0) {
-      appendGroupHeader(
-        null,
-        GROUP_COPY.ungrouped,
-        ungrouped.map((f) => f.mid),
-      );
+      const neighborMids = ungrouped.map((following) => following.mid);
+      appendGroupHeader(null, GROUP_COPY.ungrouped, neighborMids);
+      const collapsed = isCollapsed(layout, groupKey(null));
       for (const following of ungrouped) {
-        appendFollowingOncePicker(following);
+        appendFollowingOncePicker(
+          following,
+          groupKey(null),
+          collapsed,
+          neighborMids,
+        );
       }
     }
   }
@@ -533,15 +704,8 @@ export function renderHome(
       frame = document.createElement("iframe");
       frame.src = embedUrl(playingBvid);
       frame.setAttribute("allowfullscreen", "");
-      // load 时补注入:iframe 文档就绪后样式才挂得上(同一元素跨重绘保活,
-      // 监听器随元素存续,后续 src 变化导致的重新 load 也会再覆盖一次)。
-      frame.addEventListener("load", () => {
-        injectPlayerChromeStyle(frame);
-      });
       playerPane.appendChild(frame);
     }
-    // 立刻注入一次:文档已就绪(缓存 pane 复用)时当场生效;未就绪则等 load。
-    injectPlayerChromeStyle(frame);
     playerPane.dataset.playing = "";
 
     // iframe 之后的部分按本次状态重建:标题随可见列表变化,链接接到本次 handlers。

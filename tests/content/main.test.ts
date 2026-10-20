@@ -519,7 +519,7 @@ describe("start", () => {
     ) as HTMLIFrameElement | null;
     expect(frame).not.toBeNull();
     expect(frame?.getAttribute("src")).toBe(
-      "https://www.bilibili.com/blackboard/html5mobileplayer.html?bvid=BVUP2&danmaku=1&autoplay=1",
+      "https://www.bilibili.com/blackboard/html5player.html?bvid=BVUP2&danmaku=1&autoplay=1",
     );
     expect(frame?.hasAttribute("allowfullscreen")).toBe(true);
   });
@@ -1060,13 +1060,13 @@ describe("extension manifest", () => {
     readFileSync("extension/manifest.json", "utf8"),
   ) as Manifest;
 
-  it("是 MV3 清单，名字为「只看关注」", () => {
+  it("是 MV3 清单，名字为「bilistar」", () => {
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.name).toBe("只看关注");
+    expect(manifest.name).toBe("bilistar");
   });
 
-  it("版本号是 1.0.0", () => {
-    expect(manifest.version).toBe("1.0.0");
+  it("版本号是 1.3.0", () => {
+    expect(manifest.version).toBe("1.3.0");
   });
 
   it("不申请 cookies 或 storage 权限", () => {

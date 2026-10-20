@@ -1,5 +1,5 @@
 {
-  "name": "bilibili-follows-only",
+  "name": "bilistar",
   "private": true,
   "scripts": {
     "test": "vitest run",

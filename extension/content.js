@@ -455,12 +455,20 @@
     `#follows-root>nav ul{list-style:none;margin:0;padding:0}`,
     `#follows-root>nav li[data-follows]{padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#18191c}`,
     `#follows-root>nav li[data-follows-mid]{padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;white-space:nowrap;color:#18191c;display:flex;align-items:center;gap:4px;position:relative}`,
+    `#follows-root>nav li[data-follows-mid][hidden]{display:none}`,
     `#follows-root>nav li[data-follows]:hover,#follows-root>nav li[data-follows-mid]:hover{background:#f6f7f8}`,
     `#follows-root>nav li[aria-current]{background:#fff0f4;color:#fb7299;font-weight:600}`,
     `#follows-root>nav li[aria-current]:hover{background:#fff0f4}`,
-    `#follows-root>nav li[data-group-id]{padding:12px 10px 2px;font-size:12px;color:#9499a0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`,
+    `#follows-root>nav li[data-group-id]{display:flex;align-items:center;gap:4px;padding:12px 10px 2px;font-size:12px;color:#9499a0;cursor:pointer;white-space:nowrap}`,
+    `#follows-root>nav li[data-group-id]>span{min-width:0;overflow:hidden;text-overflow:ellipsis}`,
     `#follows-root>nav li[data-group-id]:hover{color:#18191c}`,
     `#follows-root>nav li[data-group-id][aria-current]{color:#fb7299;font-weight:600}`,
+    `#follows-root [data-group-toggle]{flex:none;width:16px;height:16px;padding:0;border:none;border-radius:4px;background:transparent;color:#9499a0;font-size:10px;line-height:1;cursor:pointer}`,
+    `#follows-root [data-group-toggle]::after{content:"\u25BE"}`,
+    `#follows-root [data-group-toggle][aria-expanded="false"]::after{content:"\u25B8"}`,
+    `#follows-root [data-group-toggle]:hover{color:#fb7299;background:#fff0f4}`,
+    `#follows-root>nav li[draggable="true"]{cursor:grab}`,
+    `#follows-root>nav li[data-drag-over]{outline:1px dashed #fb7299}`,
     `#follows-root>nav li[data-follows-mid]>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`,
     `#follows-root [data-group-edit]{flex:none;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:#9499a0;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0}`,
     `#follows-root [data-group-edit]::after{content:"\u270E"}`,
@@ -526,6 +534,119 @@
     (document2.head ?? document2.documentElement).appendChild(style);
   }
 
+  // src/ui/sidebar-layout.ts
+  var SIDEBAR_LAYOUT_KEY = "follows-only-sidebar-layout";
+  var UNGROUPED_KEY = "";
+  function emptySidebarLayout() {
+    return { collapsed: [], groupOrder: [], memberOrder: {} };
+  }
+  function groupKey(tagid) {
+    return tagid === null ? UNGROUPED_KEY : String(tagid);
+  }
+  function isCollapsed(layout, key) {
+    return layout.collapsed.includes(key);
+  }
+  function toggleCollapsed(layout, key) {
+    return {
+      ...layout,
+      collapsed: isCollapsed(layout, key) ? layout.collapsed.filter((item) => item !== key) : [...layout.collapsed, key]
+    };
+  }
+  function orderBy(items, preferred, idOf) {
+    const remaining = new Map(items.map((item) => [idOf(item), item]));
+    const ordered = [];
+    for (const id of preferred) {
+      const item = remaining.get(id);
+      if (item !== void 0) {
+        ordered.push(item);
+        remaining.delete(id);
+      }
+    }
+    for (const item of items) {
+      if (remaining.has(idOf(item))) {
+        ordered.push(item);
+        remaining.delete(idOf(item));
+      }
+    }
+    return ordered;
+  }
+  function moveBefore(ids, from, before) {
+    if (from === before) {
+      return ids;
+    }
+    const without = ids.filter((id) => id !== from);
+    if (before === null) {
+      return [...without, from];
+    }
+    const index = without.indexOf(before);
+    if (index === -1) {
+      return [...without, from];
+    }
+    return [...without.slice(0, index), from, ...without.slice(index)];
+  }
+  function asRecord2(value) {
+    return typeof value === "object" && value !== null ? value : null;
+  }
+  function asNumberArray(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const ids = [];
+    for (const entry of value) {
+      if (typeof entry === "number" && Number.isFinite(entry)) {
+        ids.push(entry);
+      } else if (typeof entry === "string" && entry.trim() !== "") {
+        const n = Number(entry);
+        if (Number.isFinite(n)) {
+          ids.push(n);
+        }
+      }
+    }
+    return ids;
+  }
+  function parseSidebarLayout(raw) {
+    if (raw === null || raw.trim() === "") {
+      return emptySidebarLayout();
+    }
+    try {
+      const record = asRecord2(JSON.parse(raw));
+      if (record === null) {
+        return emptySidebarLayout();
+      }
+      const collapsed = Array.isArray(record.collapsed) ? record.collapsed.filter((item) => typeof item === "string") : [];
+      const groupOrder = asNumberArray(record.groupOrder);
+      const memberOrder = {};
+      const rawMembers = asRecord2(record.memberOrder);
+      if (rawMembers !== null) {
+        for (const [key, value] of Object.entries(rawMembers)) {
+          memberOrder[key] = asNumberArray(value);
+        }
+      }
+      return { collapsed, groupOrder, memberOrder };
+    } catch {
+      return emptySidebarLayout();
+    }
+  }
+  function readSidebarLayout(storage) {
+    if (storage === null) {
+      return emptySidebarLayout();
+    }
+    try {
+      return parseSidebarLayout(storage.getItem(SIDEBAR_LAYOUT_KEY));
+    } catch {
+      return emptySidebarLayout();
+    }
+  }
+  function writeSidebarLayout(storage, layout) {
+    if (storage === null) {
+      return;
+    }
+    try {
+      storage.setItem(SIDEBAR_LAYOUT_KEY, JSON.stringify(layout));
+    } catch {
+    }
+  }
+
   // src/ui/home.ts
   var HOME_COPY = {
     sidebar: "\u5173\u6CE8",
@@ -546,7 +667,9 @@
   var GROUP_COPY = {
     ungrouped: "\u672A\u5206\u7EC4",
     editLabel: "\u79FB\u52A8\u5206\u7EC4",
-    moveFailed: "\u79FB\u52A8\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5"
+    moveFailed: "\u79FB\u52A8\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5",
+    collapseLabel: "\u6298\u53E0\u5206\u7EC4",
+    expandLabel: "\u5C55\u5F00\u5206\u7EC4"
   };
   var groupPickerMap = /* @__PURE__ */ new WeakMap();
   function groupPickerCacheOf(root) {
@@ -583,36 +706,36 @@
     return cache;
   }
   function embedUrl(bvid) {
-    return `https://www.bilibili.com/blackboard/html5mobileplayer.html?bvid=${bvid}&danmaku=1&autoplay=1`;
-  }
-  var PLAYER_CHROME_STYLE_ID = "follows-only-player-chrome";
-  var PLAYER_CHROME_CSS = [
-    ".mplayer .mplayer-control-bar-hide .mplayer-control-bar,",
-    ".mplayer .mplayer-control-bar-hide .mplayer-right,",
-    ".mplayer-display.mplayer-control-bar-hide .mplayer-top {",
-    "opacity: 1 !important;",
-    "transform: none !important;",
-    "visibility: visible !important;",
-    "}"
-  ].join("");
-  function injectPlayerChromeStyle(frame) {
-    try {
-      const doc = frame.contentDocument;
-      if (doc === null) {
-        return;
-      }
-      if (doc.getElementById(PLAYER_CHROME_STYLE_ID) !== null) {
-        return;
-      }
-      const style = doc.createElement("style");
-      style.id = PLAYER_CHROME_STYLE_ID;
-      style.textContent = PLAYER_CHROME_CSS;
-      (doc.head ?? doc.documentElement).appendChild(style);
-    } catch {
-    }
+    return `https://www.bilibili.com/blackboard/html5player.html?bvid=${bvid}&danmaku=1&autoplay=1`;
   }
   function videoUrl(bvid) {
     return `https://www.bilibili.com/video/${bvid}`;
+  }
+  function pageStorage(root) {
+    try {
+      return root.ownerDocument.defaultView?.localStorage ?? null;
+    } catch {
+      return null;
+    }
+  }
+  var activeDrag = "";
+  function dragPayload(data) {
+    const fromTransfer = data?.getData("text/plain") ?? "";
+    return fromTransfer !== "" ? fromTransfer : activeDrag;
+  }
+  function setDragPayload(data, value) {
+    activeDrag = value;
+    if (data == null) {
+      return;
+    }
+    data.setData("text/plain", value);
+    try {
+      data.effectAllowed = "move";
+    } catch {
+    }
+  }
+  function clearDragPayload() {
+    activeDrag = "";
   }
   function renderHome(root, state, handlers) {
     root.id = "follows-root";
@@ -628,12 +751,15 @@
     } = state;
     const cache = paneCacheOf(root);
     const picker = groupPickerCacheOf(root);
+    const storage = pageStorage(root);
+    let layout = readSidebarLayout(storage);
     ensureUiStyle(root.ownerDocument);
     const rerender = () => {
       const navBefore = root.querySelector("nav");
       const mainBefore = root.querySelector("main");
       const navTop = navBefore instanceof HTMLElement ? navBefore.scrollTop : 0;
       const mainTop = mainBefore instanceof HTMLElement ? mainBefore.scrollTop : 0;
+      writeSidebarLayout(storage, layout);
       renderHome(root, state, handlers);
       const navAfter = root.querySelector("nav");
       const mainAfter = root.querySelector("main");
@@ -688,18 +814,99 @@
     const groupMidSets = groups.map((group) => new Set(group.mids));
     const memberFollowings = (index) => followings.filter((following) => groupMidSets[index].has(following.mid));
     const inAnyGroup = (mid) => groupMidSets.some((mids) => mids.has(mid));
-    const visibleGroups = groups.map((group, index) => ({ group, members: memberFollowings(index) })).filter((section) => section.members.length > 0);
+    const visibleGroups = orderBy(
+      groups.map((group, index) => ({ group, members: memberFollowings(index) })).filter((section) => section.members.length > 0),
+      layout.groupOrder,
+      (section) => section.group.tagid
+    );
+    const persistLayout = (next) => {
+      layout = next;
+      writeSidebarLayout(storage, next);
+      rerender();
+    };
+    const markDragOver = (item, on) => {
+      if (on) {
+        item.dataset.dragOver = "";
+      } else {
+        delete item.dataset.dragOver;
+      }
+    };
+    const bindDropTarget = (item, onDrop) => {
+      item.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        try {
+          if (event.dataTransfer != null) {
+            event.dataTransfer.dropEffect = "move";
+          }
+        } catch {
+        }
+        markDragOver(item, true);
+      });
+      item.addEventListener("dragleave", () => {
+        markDragOver(item, false);
+      });
+      item.addEventListener("drop", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        markDragOver(item, false);
+        const payload = dragPayload(event.dataTransfer);
+        clearDragPayload();
+        onDrop(payload);
+      });
+      item.addEventListener("dragend", () => {
+        clearDragPayload();
+        markDragOver(item, false);
+      });
+    };
     const appendGroupHeader = (tagid, text, mids) => {
+      const key = groupKey(tagid);
+      const collapsed = isCollapsed(layout, key);
       const header = document.createElement("li");
-      header.dataset.groupId = tagid === null ? "" : String(tagid);
-      header.textContent = text;
+      header.dataset.groupId = key;
       if (selection.kind === "group" && selection.tagid === tagid) {
         header.setAttribute("aria-current", "page");
       }
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.dataset.groupToggle = key;
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      toggle.setAttribute(
+        "aria-label",
+        collapsed ? GROUP_COPY.expandLabel : GROUP_COPY.collapseLabel
+      );
+      toggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        persistLayout(toggleCollapsed(layout, key));
+      });
+      const label = document.createElement("span");
+      label.textContent = text;
+      header.appendChild(toggle);
+      header.appendChild(label);
       header.addEventListener(
         "click",
         () => handlers.onSelect({ kind: "group", tagid, mids })
       );
+      if (tagid !== null) {
+        header.draggable = true;
+        header.addEventListener("dragstart", (event) => {
+          event.stopPropagation();
+          setDragPayload(event.dataTransfer, `group:${tagid}`);
+        });
+        bindDropTarget(header, (payload) => {
+          if (!payload.startsWith("group:")) {
+            return;
+          }
+          const from = Number(payload.slice("group:".length));
+          if (!Number.isFinite(from) || from === tagid) {
+            return;
+          }
+          const current = visibleGroups.map((section) => section.group.tagid);
+          persistLayout({
+            ...layout,
+            groupOrder: moveBefore(current, from, tagid)
+          });
+        });
+      }
       followsList.appendChild(header);
     };
     const groupOption = (tagid, text, mid, current) => {
@@ -718,9 +925,12 @@
       });
       return option;
     };
-    const appendFollowing = (following, showPicker) => {
+    const appendFollowing = (following, showPicker, inGroup, collapsed, neighborMids) => {
       const item = document.createElement("li");
       item.dataset.followsMid = String(following.mid);
+      item.dataset.inGroup = inGroup;
+      item.hidden = collapsed;
+      item.draggable = true;
       if (selection.kind === "up" && selection.mid === following.mid) {
         item.setAttribute("aria-current", "page");
       }
@@ -770,38 +980,87 @@
         "click",
         () => handlers.onSelect({ kind: "up", mid: following.mid })
       );
+      item.addEventListener("dragstart", (event) => {
+        event.stopPropagation();
+        setDragPayload(
+          event.dataTransfer,
+          `member:${inGroup}:${following.mid}`
+        );
+      });
+      bindDropTarget(item, (payload) => {
+        const match = /^member:([^:]*):(\d+)$/.exec(payload);
+        if (match === null || match[1] !== inGroup) {
+          return;
+        }
+        const from = Number(match[2]);
+        if (!Number.isFinite(from) || from === following.mid) {
+          return;
+        }
+        persistLayout({
+          ...layout,
+          memberOrder: {
+            ...layout.memberOrder,
+            [inGroup]: moveBefore(neighborMids, from, following.mid)
+          }
+        });
+      });
       followsList.appendChild(item);
     };
     let pickerAttached = false;
-    const appendFollowingOncePicker = (following) => {
+    const appendFollowingOncePicker = (following, inGroup, collapsed, neighborMids) => {
       const showPicker = picker.openMid === following.mid && !pickerAttached;
       if (showPicker) {
         pickerAttached = true;
       }
-      appendFollowing(following, showPicker);
+      appendFollowing(
+        following,
+        showPicker,
+        inGroup,
+        collapsed,
+        neighborMids
+      );
     };
     if (visibleGroups.length === 0) {
-      for (const following of followings) {
-        appendFollowingOncePicker(following);
+      const ordered = orderBy(
+        followings,
+        layout.memberOrder[groupKey(null)] ?? [],
+        (following) => following.mid
+      );
+      const neighborMids = ordered.map((following) => following.mid);
+      for (const following of ordered) {
+        appendFollowingOncePicker(following, groupKey(null), false, neighborMids);
       }
     } else {
       for (const { group, members } of visibleGroups) {
-        appendGroupHeader(group.tagid, group.name, members.map((f) => f.mid));
-        for (const following of members) {
-          appendFollowingOncePicker(following);
+        const key = groupKey(group.tagid);
+        const ordered = orderBy(
+          members,
+          layout.memberOrder[key] ?? [],
+          (following) => following.mid
+        );
+        const neighborMids = ordered.map((following) => following.mid);
+        appendGroupHeader(group.tagid, group.name, neighborMids);
+        const collapsed = isCollapsed(layout, key);
+        for (const following of ordered) {
+          appendFollowingOncePicker(following, key, collapsed, neighborMids);
         }
       }
-      const ungrouped = followings.filter(
-        (following) => !inAnyGroup(following.mid)
+      const ungrouped = orderBy(
+        followings.filter((following) => !inAnyGroup(following.mid)),
+        layout.memberOrder[groupKey(null)] ?? [],
+        (following) => following.mid
       );
       if (ungrouped.length > 0) {
-        appendGroupHeader(
-          null,
-          GROUP_COPY.ungrouped,
-          ungrouped.map((f) => f.mid)
-        );
+        const neighborMids = ungrouped.map((following) => following.mid);
+        appendGroupHeader(null, GROUP_COPY.ungrouped, neighborMids);
+        const collapsed = isCollapsed(layout, groupKey(null));
         for (const following of ungrouped) {
-          appendFollowingOncePicker(following);
+          appendFollowingOncePicker(
+            following,
+            groupKey(null),
+            collapsed,
+            neighborMids
+          );
         }
       }
     }
@@ -905,12 +1164,8 @@
         frame = document.createElement("iframe");
         frame.src = embedUrl(playingBvid);
         frame.setAttribute("allowfullscreen", "");
-        frame.addEventListener("load", () => {
-          injectPlayerChromeStyle(frame);
-        });
         playerPane.appendChild(frame);
       }
-      injectPlayerChromeStyle(frame);
       playerPane.dataset.playing = "";
       while (frame.nextSibling !== null) {
         frame.nextSibling.remove();

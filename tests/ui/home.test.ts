@@ -74,43 +74,9 @@ function findButtonByText(root: HTMLElement, text: string) {
   );
 }
 
-// happy-dom 的 iframe.contentDocument 是 null(不支持浏览器的同源子文档),
-// 用 implementation.createHTMLDocument() 按 iframe 实例稳定地伪造一份,
-// 让注入逻辑走真实的 renderHome 代码路径;返回还原函数。
-function stubIframeDocuments(): () => void {
-  const docs = new WeakMap<HTMLIFrameElement, Document>();
-  const original = Object.getOwnPropertyDescriptor(
-    HTMLIFrameElement.prototype,
-    "contentDocument",
-  );
-  Object.defineProperty(HTMLIFrameElement.prototype, "contentDocument", {
-    configurable: true,
-    get(this: HTMLIFrameElement): Document {
-      let doc = docs.get(this);
-      if (doc === undefined) {
-        doc = document.implementation.createHTMLDocument("player");
-        docs.set(this, doc);
-      }
-      return doc;
-    },
-  });
-  return () => {
-    if (original !== undefined) {
-      Object.defineProperty(
-        HTMLIFrameElement.prototype,
-        "contentDocument",
-        original,
-      );
-    } else {
-      delete (
-        HTMLIFrameElement.prototype as { contentDocument?: unknown }
-      ).contentDocument;
-    }
-  };
-}
-
 beforeEach(() => {
   document.body.innerHTML = "";
+  localStorage.clear();
 });
 
 describe("renderHome", () => {
@@ -264,7 +230,7 @@ describe("renderHome", () => {
     const frame = pane.querySelector("iframe") as HTMLIFrameElement | null;
     expect(frame).not.toBeNull();
     expect(frame?.getAttribute("src")).toBe(
-      "https://www.bilibili.com/blackboard/html5mobileplayer.html?bvid=BV1&danmaku=1&autoplay=1",
+      "https://www.bilibili.com/blackboard/html5player.html?bvid=BV1&danmaku=1&autoplay=1",
     );
     expect(frame?.hasAttribute("allowfullscreen")).toBe(true);
 
@@ -441,74 +407,6 @@ describe("renderHome", () => {
 
     expect(frameAfter).not.toBe(frameBefore);
     expect(frameAfter?.getAttribute("src")).toContain("bvid=BV2");
-  });
-
-  it("injects the player-chrome override style into the iframe document, once per document", () => {
-    const restore = stubIframeDocuments();
-    try {
-      const state = makeState({ playingBvid: "BV1" });
-      const handlers = createHandlers();
-      const root = document.createElement("div");
-      document.body.appendChild(root);
-
-      renderHome(root, state, handlers);
-      const frame = root.querySelector(
-        "aside iframe",
-      ) as HTMLIFrameElement;
-      const doc = frame.contentDocument as Document;
-      expect(doc).not.toBeNull();
-
-      const style = doc.getElementById("follows-only-player-chrome");
-      expect(style).not.toBeNull();
-      expect(style?.textContent).toContain(
-        ".mplayer .mplayer-control-bar-hide .mplayer-control-bar",
-      );
-      expect(style?.textContent).toContain("opacity: 1 !important");
-      expect(style?.textContent).toContain("transform: none !important");
-      expect(style?.textContent).toContain("visibility: visible !important");
-
-      // 缓存 pane 复用同一个 iframe:重绘不重复注入。
-      renderHome(root, state, handlers);
-      expect(
-        doc.querySelectorAll("#follows-only-player-chrome").length,
-      ).toBe(1);
-
-      // 换视频重建 iframe:新文档也会注入。
-      renderHome(root, makeState({ playingBvid: "BV2" }), handlers);
-      const frameAfter = root.querySelector(
-        "aside iframe",
-      ) as HTMLIFrameElement;
-      expect(frameAfter.contentDocument).not.toBe(doc);
-      expect(
-        frameAfter.contentDocument?.getElementById(
-          "follows-only-player-chrome",
-        ),
-      ).not.toBeNull();
-    } finally {
-      restore();
-    }
-  });
-
-  it("re-injects the player-chrome override style when the iframe load fires", () => {
-    const restore = stubIframeDocuments();
-    try {
-      const handlers = createHandlers();
-      const root = document.createElement("div");
-      document.body.appendChild(root);
-
-      renderHome(root, makeState({ playingBvid: "BV1" }), handlers);
-      const frame = root.querySelector(
-        "aside iframe",
-      ) as HTMLIFrameElement;
-      const doc = frame.contentDocument as Document;
-      doc.getElementById("follows-only-player-chrome")?.remove();
-
-      frame.dispatchEvent(new Event("load"));
-
-      expect(doc.getElementById("follows-only-player-chrome")).not.toBeNull();
-    } finally {
-      restore();
-    }
   });
 
   it("uses the exact copy strings", () => {
@@ -791,6 +689,112 @@ describe("renderHome 原生分组", () => {
       ungrouped: "未分组",
       editLabel: "移动分组",
       moveFailed: "移动失败，请重试",
+      collapseLabel: "折叠分组",
+      expandLabel: "展开分组",
     });
+  });
+
+  function visibleSidebarEntries(root: HTMLElement): string[] {
+    return [...root.querySelectorAll("nav ul>li")]
+      .filter((li) => !li.hasAttribute("hidden"))
+      .map((li) => {
+        if (li.hasAttribute("data-follows")) {
+          return "all";
+        }
+        if (li.hasAttribute("data-follows-mid")) {
+          return `mid:${li.getAttribute("data-follows-mid")}`;
+        }
+        return `group:${li.getAttribute("data-group-id") ?? ""}`;
+      });
+  }
+
+  function dispatchDrop(source: HTMLElement, target: HTMLElement): void {
+    const transfer = new DataTransfer();
+    source.dispatchEvent(
+      new DragEvent("dragstart", { bubbles: true, dataTransfer: transfer }),
+    );
+    target.dispatchEvent(
+      new DragEvent("dragover", { bubbles: true, dataTransfer: transfer }),
+    );
+    target.dispatchEvent(
+      new DragEvent("drop", { bubbles: true, dataTransfer: transfer }),
+    );
+  }
+
+  it("点折叠按钮收起组成员，不选中分组，刷新同一文档后仍收起", () => {
+    const { root, handlers } = setup(
+      makeState({ followings: groupedFollowings, groups: nativeGroups }),
+    );
+
+    const toggle = root.querySelector(
+      '[data-group-toggle="10"]',
+    ) as HTMLButtonElement;
+    toggle.click();
+    expect(handlers.onSelect).not.toHaveBeenCalled();
+    expect(
+      root
+        .querySelector('[data-group-toggle="10"]')
+        ?.getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(visibleSidebarEntries(root)).toEqual([
+      "all",
+      "group:10",
+      "group:11",
+      "mid:4",
+      "group:",
+      "mid:3",
+    ]);
+
+    document.body.innerHTML = "";
+    const again = setup(
+      makeState({ followings: groupedFollowings, groups: nativeGroups }),
+    );
+    expect(
+      again.root
+        .querySelector('[data-group-toggle="10"]')
+        ?.getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(
+      again.root.querySelector('li[data-follows-mid="2"]')?.hidden,
+    ).toBe(true);
+  });
+
+  it("拖拽组头可以调整自定义组顺序，未分组仍垫底", () => {
+    const { root } = setup(
+      makeState({ followings: groupedFollowings, groups: nativeGroups }),
+    );
+
+    dispatchDrop(
+      root.querySelector('[data-group-id="11"]') as HTMLElement,
+      root.querySelector('[data-group-id="10"]') as HTMLElement,
+    );
+
+    expect(visibleSidebarEntries(root)).toEqual([
+      "all",
+      "group:11",
+      "mid:4",
+      "group:10",
+      "mid:2",
+      "mid:4",
+      "group:",
+      "mid:3",
+    ]);
+  });
+
+  it("拖拽同一组内的 UP 行可以调整组内顺序", () => {
+    const { root } = setup(
+      makeState({ followings: groupedFollowings, groups: nativeGroups }),
+    );
+
+    const members = [
+      ...root.querySelectorAll('li[data-follows-mid][data-in-group="10"]'),
+    ] as HTMLElement[];
+    dispatchDrop(members[1] as HTMLElement, members[0] as HTMLElement);
+
+    expect(
+      [...root.querySelectorAll('li[data-follows-mid][data-in-group="10"]')].map(
+        (li) => li.getAttribute("data-follows-mid"),
+      ),
+    ).toEqual(["4", "2"]);
   });
 });
