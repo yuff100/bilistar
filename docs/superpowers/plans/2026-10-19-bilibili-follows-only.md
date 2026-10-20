@@ -286,7 +286,7 @@ git commit -m "feat: render the follows-only home page"
 
 `REMOVE_SELECTORS` 的值固定为：
 
-- `followed`: `#biliMainHeader`, `.bili-header`, `#reco_list`, `.rec-footer`, `.recommend-list-container`, `.bpx-player-ending-wrap`, `.bpx-player-ending-related`
+- `followed`: `#biliMainHeader`, `.bili-header`, `#reco_list`, `.rec-footer`, `.recommend-list-container`, `.bpx-player-ending-wrap`, `.bpx-player-ending-related`, `.next-play`
 - `unfollowed`: 上面这些，再加上 `#comment`, `#commentapp`, `bili-comments`, `.video-toolbar-left`, `#arc_toolbar_report`
 - `native`: `#biliMainHeader`, `.bili-header`
 
