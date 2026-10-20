@@ -221,7 +221,7 @@ describe("renderHome", () => {
     const frame = pane.querySelector("iframe") as HTMLIFrameElement | null;
     expect(frame).not.toBeNull();
     expect(frame?.getAttribute("src")).toBe(
-      "https://player.bilibili.com/player.html?bvid=BV1&autoplay=1&danmaku=1",
+      "https://www.bilibili.com/blackboard/html5mobileplayer.html?bvid=BV1&danmaku=1&autoplay=1",
     );
     expect(frame?.hasAttribute("allowfullscreen")).toBe(true);
 

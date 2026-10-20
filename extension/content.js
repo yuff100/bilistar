@@ -601,7 +601,7 @@
     return cache;
   }
   function embedUrl(bvid) {
-    return `https://player.bilibili.com/player.html?bvid=${bvid}&autoplay=1&danmaku=1`;
+    return `https://www.bilibili.com/blackboard/html5mobileplayer.html?bvid=${bvid}&danmaku=1&autoplay=1`;
   }
   function videoUrl(bvid) {
     return `https://www.bilibili.com/video/${bvid}`;
