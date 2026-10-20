@@ -469,13 +469,29 @@ async function runHome(
       }
       slot.items = newestFirst(collapseParts([...slot.items, ...page.items]));
       slot.cursor = page.cursor;
-      render();
+      render({ preserveScroll: true });
     } finally {
       loadingMore = false;
     }
   }
 
-  function render(): void {
+  function readScrollTop(): number {
+    const scrolling = env.document.scrollingElement;
+    return scrolling?.scrollTop ?? env.document.defaultView?.scrollY ?? 0;
+  }
+
+  function restoreScrollTop(y: number): void {
+    const scrolling = env.document.scrollingElement;
+    if (scrolling) {
+      scrolling.scrollTop = y;
+      return;
+    }
+    env.document.defaultView?.scrollTo(0, y);
+  }
+
+  function render(options?: { preserveScroll?: boolean }): void {
+    const preserved =
+      options?.preserveScroll === true ? readScrollTop() : undefined;
     const slot = currentSlot();
     const state: HomeState = {
       followings: orderFollowings(followings, rankingSubmissions()),
@@ -512,6 +528,11 @@ async function runHome(
         void loadMore();
       },
     });
+    if (preserved !== undefined) {
+      restoreScrollTop(preserved);
+    } else {
+      restoreScrollTop(0);
+    }
   }
 
   render();

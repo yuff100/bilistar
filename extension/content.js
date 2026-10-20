@@ -996,12 +996,25 @@
         }
         slot.items = newestFirst(collapseParts([...slot.items, ...page.items]));
         slot.cursor = page.cursor;
-        render();
+        render({ preserveScroll: true });
       } finally {
         loadingMore = false;
       }
     }
-    function render() {
+    function readScrollTop() {
+      const scrolling = env.document.scrollingElement;
+      return scrolling?.scrollTop ?? env.document.defaultView?.scrollY ?? 0;
+    }
+    function restoreScrollTop(y) {
+      const scrolling = env.document.scrollingElement;
+      if (scrolling) {
+        scrolling.scrollTop = y;
+        return;
+      }
+      env.document.defaultView?.scrollTo(0, y);
+    }
+    function render(options) {
+      const preserved = options?.preserveScroll === true ? readScrollTop() : void 0;
       const slot = currentSlot();
       const state = {
         followings: orderFollowings(followings, rankingSubmissions()),
@@ -1037,6 +1050,11 @@
           void loadMore();
         }
       });
+      if (preserved !== void 0) {
+        restoreScrollTop(preserved);
+      } else {
+        restoreScrollTop(0);
+      }
     }
     render();
     revealDocument(env.document);

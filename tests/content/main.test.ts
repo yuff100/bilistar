@@ -443,6 +443,46 @@ describe("start", () => {
     expect(cards[cards.length - 1]).toBe("BVM20");
   });
 
+  it("点继续看后在重绘后保持滚动位置", async () => {
+    const feed = Array.from({ length: 21 }, (_, i) =>
+      rawArchive(`m${i}`, `BVM${i}`, `稿${i}`, 2, "影视飓风", 2000 - i),
+    );
+    const world = makeWorld("https://www.bilibili.com/", {
+      feedAll: feed,
+      feedAllOffset: "cursor-2",
+    });
+
+    await start(world.env);
+
+    const scrolling = document.scrollingElement ?? document.documentElement;
+    scrolling.scrollTop = 480;
+
+    const more = document.querySelector(
+      "#follows-root main button",
+    ) as HTMLButtonElement | null;
+    more?.click();
+    await settle();
+
+    expect(scrolling.scrollTop).toBe(480);
+  });
+
+  it("切换 UP 后滚动回到顶部", async () => {
+    const world = makeWorld("https://www.bilibili.com/");
+
+    await start(world.env);
+
+    const scrolling = document.scrollingElement ?? document.documentElement;
+    scrolling.scrollTop = 480;
+
+    const upItem = [...document.querySelectorAll("#follows-root nav li")].find(
+      (li) => li.textContent === "何同学",
+    );
+    upItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+
+    expect(scrolling.scrollTop).toBe(0);
+  });
+
   it("已关注的空间页变成首页且只显示这个 UP 的投稿", async () => {
     const world = makeWorld("https://space.bilibili.com/2");
 
