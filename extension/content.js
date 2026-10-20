@@ -371,6 +371,61 @@
     }
   }
 
+  // src/ui/style.ts
+  var UI_STYLE_ID = "follows-only-ui";
+  var FONT_STACK = '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif';
+  var HOME_CSS = [
+    `#follows-root{position:fixed;inset:0;display:flex;background:#f6f7f8;color:#18191c;font-size:14px;line-height:1.5;font-family:${FONT_STACK}}`,
+    `#follows-root *{box-sizing:border-box}`,
+    `#follows-root>nav{width:200px;flex:none;height:100%;overflow-y:auto;background:#fff;border-right:1px solid #e3e5e7;padding:16px 12px}`,
+    `#follows-root>nav h1{margin:0 8px 12px;font-size:16px;font-weight:700;color:#18191c}`,
+    `#follows-root>nav ul{list-style:none;margin:0;padding:0}`,
+    `#follows-root>nav li[data-follows],#follows-root>nav li[data-follows-mid]{padding:8px 10px;margin-bottom:4px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#18191c}`,
+    `#follows-root>nav li[data-follows]:hover,#follows-root>nav li[data-follows-mid]:hover{background:#f6f7f8}`,
+    `#follows-root>nav li[aria-current]{background:#fff0f4;color:#fb7299;font-weight:600}`,
+    `#follows-root>nav li[aria-current]:hover{background:#fff0f4}`,
+    `#follows-root>main{flex:1;height:100%;overflow-y:auto;padding:20px 24px}`,
+    `#follows-root main nav{display:flex;gap:8px;margin-bottom:16px}`,
+    `#follows-root main nav a{display:inline-block;padding:4px 12px;border-radius:999px;background:#fff;border:1px solid #e3e5e7;color:#61666d;font-size:13px;text-decoration:none}`,
+    `#follows-root main nav a:hover{color:#fb7299;border-color:#fb7299}`,
+    `#follows-root main ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px;max-width:720px}`,
+    `#follows-root li[data-bvid]{background:#fff;border:1px solid #e3e5e7;border-radius:8px;padding:14px 16px;cursor:pointer;transition:box-shadow .15s ease}`,
+    `#follows-root li[data-bvid]:hover{box-shadow:0 4px 12px rgba(0,0,0,.08)}`,
+    `#follows-root li[data-bvid] h2{margin:0 0 6px;font-size:15px;font-weight:600;color:#18191c}`,
+    `#follows-root li[data-bvid] span{margin-right:8px;color:#9499a0;font-size:13px}`,
+    `#follows-root li[data-bvid] time{color:#9499a0;font-size:12px}`,
+    `#follows-root main p{margin:0;padding:24px 0;color:#9499a0}`,
+    `#follows-root main button{margin-top:16px;padding:8px 20px;border-radius:999px;border:1px solid #e3e5e7;background:#fff;color:#61666d;font-size:14px;cursor:pointer}`,
+    `#follows-root main button:hover{color:#fb7299;border-color:#fb7299}`
+  ].join("");
+  var LOGIN_CSS = [
+    `#follows-login{position:fixed;inset:0;margin:auto;width:320px;height:180px;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid #e3e5e7;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.08);font-family:${FONT_STACK}}`,
+    `#follows-login a{display:inline-block;background:#fb7299;color:#fff;text-decoration:none;padding:12px 32px;border-radius:8px;font-size:16px;font-weight:600;box-shadow:0 4px 12px rgba(251,114,153,.35)}`,
+    `#follows-login a:hover{background:#fc8bab}`
+  ].join("");
+  var WATCH_CSS = [
+    `a[data-action="back-home"]{position:fixed;top:12px;left:12px;z-index:100001;display:inline-block;background:#fff;color:#fb7299;font-weight:600;font-size:13px;text-decoration:none;padding:6px 14px;border-radius:999px;border:1px solid #e3e5e7;box-shadow:0 2px 8px rgba(0,0,0,.12);font-family:${FONT_STACK}}`,
+    `a[data-action="back-home"]:hover{background:#fff0f4}`,
+    `#follows-up-videos{position:fixed;top:72px;right:16px;width:320px;max-height:calc(100vh - 96px);overflow-y:auto;background:#f6f7f8;border:1px solid #e3e5e7;border-radius:8px;padding:12px;box-sizing:border-box;z-index:100000;color:#18191c;font-size:14px;line-height:1.5;font-family:${FONT_STACK}}`,
+    `#follows-up-videos ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}`,
+    `#follows-up-videos li{background:#fff;border:1px solid #e3e5e7;border-radius:8px}`,
+    `#follows-up-videos a{display:block;padding:10px 12px;color:#18191c;text-decoration:none;font-size:13px;border-radius:8px}`,
+    `#follows-up-videos a:hover{color:#fb7299}`,
+    `button[data-action="follow"]{position:fixed;right:24px;bottom:24px;z-index:100001;background:#fb7299;color:#fff;border:none;border-radius:8px;padding:10px 24px;font-size:14px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(251,114,153,.4);font-family:${FONT_STACK}}`,
+    `button[data-action="follow"]:hover{background:#fc8bab}`,
+    `[data-role="follow-error"]{position:fixed;right:24px;bottom:78px;z-index:100001;background:#fff0f4;color:#f25d8e;border:1px solid #fb7299;border-radius:6px;padding:6px 12px;font-size:13px;font-family:${FONT_STACK}}`
+  ].join("");
+  var UI_CSS = `${HOME_CSS}${LOGIN_CSS}${WATCH_CSS}`;
+  function ensureUiStyle(document2) {
+    if (document2.getElementById(UI_STYLE_ID) !== null) {
+      return;
+    }
+    const style = document2.createElement("style");
+    style.id = UI_STYLE_ID;
+    style.textContent = UI_CSS;
+    (document2.head ?? document2.documentElement).appendChild(style);
+  }
+
   // src/ui/home.ts
   var HOME_COPY = {
     sidebar: "\u5173\u6CE8",
@@ -402,6 +457,7 @@
     root.id = "follows-root";
     root.textContent = "";
     const { followings, submissions, selectedMid, hasMore } = state;
+    ensureUiStyle(root.ownerDocument);
     const sidebar = document.createElement("nav");
     const heading = document.createElement("h1");
     heading.textContent = HOME_COPY.sidebar;
@@ -410,12 +466,18 @@
     const allItem = document.createElement("li");
     allItem.textContent = HOME_COPY.all;
     allItem.dataset.follows = "all";
+    if (selectedMid === null) {
+      allItem.setAttribute("aria-current", "page");
+    }
     allItem.addEventListener("click", () => handlers.onSelect(null));
     followsList.appendChild(allItem);
     for (const following of followings) {
       const item = document.createElement("li");
       item.textContent = following.name;
       item.dataset.followsMid = String(following.mid);
+      if (selectedMid === following.mid) {
+        item.setAttribute("aria-current", "page");
+      }
       item.addEventListener("click", () => handlers.onSelect(following.mid));
       followsList.appendChild(item);
     }
@@ -578,6 +640,7 @@
     document2.body.appendChild(follow);
   }
   function applyWatchPolicy(document2, mode, submissions) {
+    ensureUiStyle(document2);
     removeMatching(document2, REMOVE_SELECTORS[mode]);
     if (mode === "followed") {
       ensureBackHomeLink(document2);
@@ -865,6 +928,7 @@
   }
   function promptLogin(env) {
     clearBody(env.document);
+    ensureUiStyle(env.document);
     const box = env.document.createElement("div");
     box.id = LOGIN_ID;
     const link = env.document.createElement("a");

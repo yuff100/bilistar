@@ -1,4 +1,5 @@
 import type { Submission } from "../domain/feed.js";
+import { ensureUiStyle } from "./style.js";
 
 export type WatchMode = "followed" | "unfollowed" | "native";
 
@@ -121,6 +122,7 @@ export function applyWatchPolicy(
   mode: WatchMode,
   submissions: Submission[],
 ): void {
+  ensureUiStyle(document);
   removeMatching(document, REMOVE_SELECTORS[mode]);
 
   if (mode === "followed") {

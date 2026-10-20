@@ -28,6 +28,7 @@ import {
   readCsrfToken,
 } from "../api/client.js";
 import { renderHome, type HomeState } from "../ui/home.js";
+import { ensureUiStyle } from "../ui/style.js";
 import { applyWatchPolicy } from "../ui/watch.js";
 
 export type PageEnv = {
@@ -369,6 +370,7 @@ function clearBody(document: Document): void {
 
 function promptLogin(env: PageEnv): void {
   clearBody(env.document);
+  ensureUiStyle(env.document);
   const box = env.document.createElement("div");
   box.id = LOGIN_ID;
   const link = env.document.createElement("a");

@@ -226,6 +226,25 @@ describe("renderHome", () => {
     expect(root.querySelector("input")).toBeNull();
   });
 
+  it("injects the shared follows-only-ui stylesheet once", () => {
+    setup({
+      followings,
+      submissions,
+      selectedMid: null,
+      hasMore: false,
+    });
+    setup({
+      followings,
+      submissions,
+      selectedMid: 2,
+      hasMore: false,
+    });
+
+    const styles = document.querySelectorAll("#follows-only-ui");
+    expect(styles.length).toBe(1);
+    expect(styles[0]?.textContent).toContain("#follows-root");
+  });
+
   it("uses the exact copy strings", () => {
     expect(HOME_COPY).toEqual({
       sidebar: "关注",

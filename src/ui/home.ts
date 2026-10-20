@@ -1,4 +1,5 @@
 import type { Following, Submission } from "../domain/feed.js";
+import { ensureUiStyle } from "./style.js";
 
 export type HomeState = {
   followings: Following[];
@@ -51,6 +52,8 @@ export function renderHome(
 
   const { followings, submissions, selectedMid, hasMore } = state;
 
+  ensureUiStyle(root.ownerDocument);
+
   const sidebar = document.createElement("nav");
   const heading = document.createElement("h1");
   heading.textContent = HOME_COPY.sidebar;
@@ -60,6 +63,9 @@ export function renderHome(
   const allItem = document.createElement("li");
   allItem.textContent = HOME_COPY.all;
   allItem.dataset.follows = "all";
+  if (selectedMid === null) {
+    allItem.setAttribute("aria-current", "page");
+  }
   allItem.addEventListener("click", () => handlers.onSelect(null));
   followsList.appendChild(allItem);
 
@@ -67,6 +73,9 @@ export function renderHome(
     const item = document.createElement("li");
     item.textContent = following.name;
     item.dataset.followsMid = String(following.mid);
+    if (selectedMid === following.mid) {
+      item.setAttribute("aria-current", "page");
+    }
     item.addEventListener("click", () => handlers.onSelect(following.mid));
     followsList.appendChild(item);
   }
