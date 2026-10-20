@@ -209,6 +209,33 @@ describe("parseDynamics", () => {
   it("returns null nextOffset when offset is missing", () => {
     expect(parseDynamics({ code: 0, data: { items: [] } }).nextOffset).toBeNull();
   });
+
+  it("accepts pub_ts as a numeric string from the live API", () => {
+    const body = {
+      code: 0,
+      data: {
+        items: [
+          {
+            id_str: "2001",
+            modules: {
+              module_author: {
+                mid: 10,
+                name: "UP主",
+                pub_ts: "1792207804",
+              },
+              module_dynamic: {
+                major: {
+                  type: "MAJOR_TYPE_LIVE_RCMD",
+                },
+              },
+            },
+          },
+        ],
+      },
+    };
+
+    expect(parseDynamics(body).items[0]?.publishedAt).toBe(1_792_207_804_000);
+  });
 });
 
 describe("listAllSubmissions", () => {

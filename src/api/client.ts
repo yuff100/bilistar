@@ -13,7 +13,18 @@ function asRecord(value: unknown): UnknownRecord | null {
 }
 
 function asNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "") {
+      return null;
+    }
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 function asString(value: unknown): string | null {
