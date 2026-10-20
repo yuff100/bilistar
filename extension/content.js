@@ -386,6 +386,15 @@
     `#follows-root>nav li[data-follows]:hover,#follows-root>nav li[data-follows-mid]:hover{background:#f6f7f8}`,
     `#follows-root>nav li[aria-current]{background:#fff0f4;color:#fb7299;font-weight:600}`,
     `#follows-root>nav li[aria-current]:hover{background:#fff0f4}`,
+    `#follows-root>nav li[data-tag-group]{padding:12px 10px 2px;font-size:12px;color:#9499a0;cursor:default;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`,
+    `#follows-root>nav li[data-follows-mid]{display:flex;align-items:center;gap:4px}`,
+    `#follows-root>nav li[data-follows-mid]>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`,
+    `#follows-root [data-tag-edit]{flex:none;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:#9499a0;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0}`,
+    `#follows-root [data-tag-edit]::after{content:"\u270E"}`,
+    `#follows-root>nav li[data-follows-mid]:hover [data-tag-edit],#follows-root>nav li[data-follows-mid]:focus-within [data-tag-edit],#follows-root [data-tag-edit]:focus{opacity:1}`,
+    `#follows-root [data-tag-edit]:hover{color:#fb7299;background:#fff0f4}`,
+    `#follows-root>nav li[data-tag-editing]{padding:4px 6px}`,
+    `#follows-root [data-tag-input]{width:100%;padding:4px 6px;border:1px solid #fb7299;border-radius:4px;background:#fff;color:#18191c;font-size:13px;font-family:inherit;outline:none}`,
     `#follows-root [data-action="collapse-left"],#follows-root [data-action="collapse-mid"]{flex:none;width:22px;height:22px;margin:0;padding:0;border:1px solid #e3e5e7;border-radius:6px;background:#fff;color:#9499a0;font-size:13px;line-height:1;cursor:pointer}`,
     `#follows-root [data-action="collapse-left"]:hover,#follows-root [data-action="collapse-mid"]:hover{color:#fb7299;border-color:#fb7299}`,
     `#follows-root>button[data-action="restore-left"],#follows-root>button[data-action="restore-mid"]{width:20px;flex:none;padding:0;border:none;background:#fff;color:#fb7299;font-size:14px;cursor:pointer}`,
@@ -458,6 +467,103 @@
     collapse: "\u2039",
     restore: "\u203A"
   };
+  var TAGS_STORAGE_KEY = "follows-only-tags";
+  var TAG_MAX_LENGTH = 12;
+  var TAG_COPY = {
+    ungrouped: "\u672A\u5206\u7EC4",
+    editLabel: "\u7F16\u8F91\u6807\u7B7E",
+    inputLabel: "\u6253\u6807\u7B7E"
+  };
+  var tagEditCacheMap = /* @__PURE__ */ new WeakMap();
+  function tagEditCacheOf(root) {
+    let cache = tagEditCacheMap.get(root);
+    if (cache === void 0) {
+      cache = { editingMid: null };
+      tagEditCacheMap.set(root, cache);
+    }
+    return cache;
+  }
+  function storageOf(document2) {
+    try {
+      return document2.defaultView?.localStorage ?? null;
+    } catch {
+      return null;
+    }
+  }
+  function normalizeTag(value) {
+    const tag = value.trim().slice(0, TAG_MAX_LENGTH);
+    return tag === "" ? null : tag;
+  }
+  function readUpTags(storage) {
+    if (storage === null) {
+      return {};
+    }
+    let raw;
+    try {
+      raw = storage.getItem(TAGS_STORAGE_KEY);
+    } catch {
+      return {};
+    }
+    if (raw === null) {
+      return {};
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+    const tags = {};
+    for (const [mid, value] of Object.entries(parsed)) {
+      if (typeof value !== "string") {
+        continue;
+      }
+      const tag = normalizeTag(value);
+      if (tag !== null) {
+        tags[mid] = tag;
+      }
+    }
+    return tags;
+  }
+  function persistUpTag(storage, mid, tag) {
+    if (storage === null) {
+      return;
+    }
+    const tags = readUpTags(storage);
+    const key = String(mid);
+    if (tag === null) {
+      delete tags[key];
+    } else {
+      tags[key] = tag;
+    }
+    try {
+      storage.setItem(TAGS_STORAGE_KEY, JSON.stringify(tags));
+    } catch {
+    }
+  }
+  function groupFollowings(followings, tags) {
+    const tagged = [];
+    const byTag = /* @__PURE__ */ new Map();
+    const untagged = [];
+    for (const following of followings) {
+      const tag = tags[String(following.mid)];
+      if (tag === void 0) {
+        untagged.push(following);
+        continue;
+      }
+      let group = byTag.get(tag);
+      if (group === void 0) {
+        group = { tag, items: [] };
+        byTag.set(tag, group);
+        tagged.push(group);
+      }
+      group.items.push(following);
+    }
+    return { tagged, untagged };
+  }
   function workLinks(mid) {
     return [
       {
@@ -494,7 +600,24 @@
     root.textContent = "";
     const { followings, submissions, selectedMid, hasMore, playingBvid } = state;
     const cache = paneCacheOf(root);
+    const tagEdit = tagEditCacheOf(root);
+    const tagStorage = storageOf(root.ownerDocument);
     ensureUiStyle(root.ownerDocument);
+    const rerender = () => {
+      const navBefore = root.querySelector("nav");
+      const mainBefore = root.querySelector("main");
+      const navTop = navBefore instanceof HTMLElement ? navBefore.scrollTop : 0;
+      const mainTop = mainBefore instanceof HTMLElement ? mainBefore.scrollTop : 0;
+      renderHome(root, state, handlers);
+      const navAfter = root.querySelector("nav");
+      const mainAfter = root.querySelector("main");
+      if (navAfter instanceof HTMLElement) {
+        navAfter.scrollTop = navTop;
+      }
+      if (mainAfter instanceof HTMLElement) {
+        mainAfter.scrollTop = mainTop;
+      }
+    };
     const restoreLeft = document.createElement("button");
     restoreLeft.type = "button";
     restoreLeft.dataset.action = "restore-left";
@@ -533,15 +656,94 @@
     }
     allItem.addEventListener("click", () => handlers.onSelect(null));
     followsList.appendChild(allItem);
-    for (const following of followings) {
+    const upTags = readUpTags(tagStorage);
+    const groups = groupFollowings(followings, upTags);
+    const appendTagHeader = (text, tag) => {
+      const header = document.createElement("li");
+      header.textContent = text;
+      header.dataset.tagGroup = tag;
+      followsList.appendChild(header);
+    };
+    const appendFollowing = (following) => {
       const item = document.createElement("li");
-      item.textContent = following.name;
       item.dataset.followsMid = String(following.mid);
       if (selectedMid === following.mid) {
         item.setAttribute("aria-current", "page");
       }
+      if (tagEdit.editingMid === following.mid) {
+        item.dataset.tagEditing = "";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = upTags[String(following.mid)] ?? "";
+        input.maxLength = TAG_MAX_LENGTH;
+        input.dataset.tagInput = String(following.mid);
+        input.setAttribute("aria-label", TAG_COPY.inputLabel);
+        let settled = false;
+        const settle = (commit) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          tagEdit.editingMid = null;
+          if (commit) {
+            persistUpTag(tagStorage, following.mid, normalizeTag(input.value));
+          }
+          rerender();
+        };
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            settle(true);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            settle(false);
+          }
+        });
+        input.addEventListener("blur", () => settle(true));
+        input.addEventListener("click", (event) => event.stopPropagation());
+        item.appendChild(input);
+      } else {
+        const name = document.createElement("span");
+        name.textContent = following.name;
+        item.appendChild(name);
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.dataset.tagEdit = String(following.mid);
+        edit.setAttribute("aria-label", TAG_COPY.editLabel);
+        edit.addEventListener("click", (event) => {
+          event.stopPropagation();
+          tagEdit.editingMid = following.mid;
+          rerender();
+          const input = root.querySelector(
+            `[data-tag-input="${following.mid}"]`
+          );
+          if (input !== null) {
+            input.focus();
+            input.select();
+          }
+        });
+        item.appendChild(edit);
+      }
       item.addEventListener("click", () => handlers.onSelect(following.mid));
       followsList.appendChild(item);
+    };
+    if (groups.tagged.length === 0) {
+      for (const following of followings) {
+        appendFollowing(following);
+      }
+    } else {
+      for (const group of groups.tagged) {
+        appendTagHeader(group.tag, group.tag);
+        for (const following of group.items) {
+          appendFollowing(following);
+        }
+      }
+      if (groups.untagged.length > 0) {
+        appendTagHeader(TAG_COPY.ungrouped, "");
+        for (const following of groups.untagged) {
+          appendFollowing(following);
+        }
+      }
     }
     sidebar.appendChild(followsList);
     root.appendChild(sidebar);

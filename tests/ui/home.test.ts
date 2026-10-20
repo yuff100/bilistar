@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Following, Submission } from "../../src/domain/feed.js";
 import {
   HOME_COPY,
+  TAGS_STORAGE_KEY,
+  TAG_COPY,
   renderHome,
   type HomeHandlers,
   type HomeState,
@@ -409,5 +411,202 @@ describe("renderHome", () => {
       course: "课程",
       more: "继续看",
     });
+  });
+});
+
+describe("renderHome 标签分组", () => {
+  const taggedFollowings: Following[] = [
+    { mid: 2, name: "影视飓风" },
+    { mid: 3, name: "何同学" },
+    { mid: 4, name: "老番茄" },
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function seedTags(tags: Record<string, string>): void {
+    localStorage.setItem(TAGS_STORAGE_KEY, JSON.stringify(tags));
+  }
+
+  function storedTags(): Record<string, string> {
+    const raw = localStorage.getItem(TAGS_STORAGE_KEY);
+    return raw === null ? {} : (JSON.parse(raw) as Record<string, string>);
+  }
+
+  function sidebarEntries(root: HTMLElement): string[] {
+    return [...root.querySelectorAll("nav ul>li")].map((li) => {
+      if (li.hasAttribute("data-follows")) {
+        return "all";
+      }
+      if (li.hasAttribute("data-follows-mid")) {
+        return `mid:${li.getAttribute("data-follows-mid")}`;
+      }
+      return `tag:${li.getAttribute("data-tag-group") ?? ""}`;
+    });
+  }
+
+  function startEditing(root: HTMLElement, mid: number): HTMLInputElement {
+    const button = root.querySelector(
+      `[data-tag-edit="${mid}"]`,
+    ) as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+    (button as HTMLButtonElement).click();
+    const input = root.querySelector(
+      `[data-tag-input="${mid}"]`,
+    ) as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    return input as HTMLInputElement;
+  }
+
+  function pressKey(input: HTMLInputElement, key: string): void {
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+    );
+  }
+
+  it("没有任何标签时保持扁平列表，不出现分组头", () => {
+    const { root } = setup(makeState({ followings: taggedFollowings }));
+
+    expect(root.querySelectorAll("[data-tag-group]").length).toBe(0);
+    expect(sidebarEntries(root)).toEqual(["all", "mid:2", "mid:3", "mid:4"]);
+  });
+
+  it("组按标签首次出现顺序排，组内保持原顺序，未分组垫底", () => {
+    seedTags({ "2": "书法", "3": "物理", "4": "书法" });
+    const { root } = setup(makeState({ followings: taggedFollowings }));
+
+    expect(sidebarEntries(root)).toEqual([
+      "all",
+      "tag:书法",
+      "mid:2",
+      "mid:4",
+      "tag:物理",
+      "mid:3",
+    ]);
+  });
+
+  it("有标签时没打标签的 UP 进「未分组」，排在所有分组之后", () => {
+    seedTags({ "2": "书法" });
+    const { root } = setup(makeState({ followings: taggedFollowings }));
+
+    expect(sidebarEntries(root)).toEqual([
+      "all",
+      "tag:书法",
+      "mid:2",
+      "tag:",
+      "mid:3",
+      "mid:4",
+    ]);
+    expect(root.querySelector('[data-tag-group=""]')?.textContent).toBe(
+      TAG_COPY.ungrouped,
+    );
+  });
+
+  it("点 ✎ 不触发选人，Enter 保存写入 localStorage 并立刻重新分组", () => {
+    const { root, handlers } = setup(
+      makeState({ followings: taggedFollowings }),
+    );
+
+    const input = startEditing(root, 2);
+    expect(handlers.onSelect).not.toHaveBeenCalled();
+    expect(input.getAttribute("aria-label")).toBe("打标签");
+    expect(input.maxLength).toBe(12);
+
+    input.value = "书法";
+    pressKey(input, "Enter");
+
+    expect(storedTags()).toEqual({ "2": "书法" });
+    expect(root.querySelector("[data-tag-input]")).toBeNull();
+    expect(sidebarEntries(root)).toEqual([
+      "all",
+      "tag:书法",
+      "mid:2",
+      "tag:",
+      "mid:3",
+      "mid:4",
+    ]);
+  });
+
+  it("编辑态预填已有标签，清空后 Enter 视为清除", () => {
+    seedTags({ "2": "书法" });
+    const { root } = setup(makeState());
+
+    const input = startEditing(root, 2);
+    expect(input.value).toBe("书法");
+
+    input.value = "";
+    pressKey(input, "Enter");
+
+    expect(storedTags()).toEqual({});
+    expect(root.querySelectorAll("[data-tag-group]").length).toBe(0);
+  });
+
+  it("Escape 取消编辑，不写 localStorage", () => {
+    const { root } = setup(makeState());
+
+    const input = startEditing(root, 3);
+    input.value = "物理";
+    pressKey(input, "Escape");
+
+    expect(localStorage.getItem(TAGS_STORAGE_KEY)).toBeNull();
+    expect(root.querySelector("[data-tag-input]")).toBeNull();
+    expect(root.querySelectorAll("[data-tag-group]").length).toBe(0);
+  });
+
+  it("失焦(blur)同样保存", () => {
+    const { root } = setup(makeState());
+
+    const input = startEditing(root, 2);
+    input.value = "科普";
+    input.dispatchEvent(new FocusEvent("blur"));
+
+    expect(storedTags()).toEqual({ "2": "科普" });
+    expect(root.querySelector("[data-tag-input]")).toBeNull();
+  });
+
+  it("保存时去掉首尾空格，超过 12 字的部分被截断", () => {
+    const { root } = setup(makeState());
+
+    const input = startEditing(root, 2);
+    input.value = "  物理科普经济书法AI知识区  ";
+    pressKey(input, "Enter");
+
+    expect(storedTags()).toEqual({ "2": "物理科普经济书法AI知识" });
+  });
+
+  it("选中的 UP 在分组里仍然 aria-current 高亮，行点击照常选人", () => {
+    seedTags({ "2": "书法" });
+    const { root, handlers } = setup(
+      makeState({ followings: taggedFollowings, selectedMid: 2 }),
+    );
+
+    const row = root.querySelector('li[data-follows-mid="2"]');
+    expect(row?.getAttribute("aria-current")).toBe("page");
+
+    (root.querySelector('li[data-follows-mid="3"]') as HTMLElement).click();
+    expect(handlers.onSelect).toHaveBeenCalledWith(3);
+  });
+
+  it("编辑态随重绘保留在同一根节点上，换根节点消失", () => {
+    const state = makeState();
+    const { root, handlers } = setup(state);
+
+    startEditing(root, 2);
+    renderHome(root, state, handlers);
+    expect(root.querySelector('[data-tag-input="2"]')).not.toBeNull();
+
+    const fresh = document.createElement("div");
+    document.body.appendChild(fresh);
+    renderHome(fresh, state, handlers);
+    expect(fresh.querySelector("[data-tag-input]")).toBeNull();
+  });
+
+  it("localStorage 里存了坏数据时按无标签渲染", () => {
+    localStorage.setItem(TAGS_STORAGE_KEY, "{oops");
+    const { root } = setup(makeState());
+
+    expect(root.querySelectorAll("[data-tag-group]").length).toBe(0);
+    expect(sidebarEntries(root)).toEqual(["all", "mid:2", "mid:3"]);
   });
 });

@@ -179,6 +179,7 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   resetPageRuntime(document);
   document.body.innerHTML = "";
+  localStorage.clear();
 });
 
 describe("loadFollowings", () => {
@@ -403,6 +404,28 @@ describe("start", () => {
       (node) => node.getAttribute("data-bvid"),
     );
     expect(cards).toEqual(["BVUP3", "BVUP2"]);
+  });
+
+  it("首页侧栏按 localStorage 里的标签分组，未分组排在最后", async () => {
+    localStorage.setItem("follows-only-tags", JSON.stringify({ "2": "影视" }));
+    const world = makeWorld("https://www.bilibili.com/");
+
+    await start(world.env);
+
+    const entries = [
+      ...document.querySelectorAll("#follows-root nav ul>li"),
+    ].map((li) => {
+      if (li.hasAttribute("data-follows")) {
+        return "all";
+      }
+      if (li.hasAttribute("data-follows-mid")) {
+        return `mid:${li.getAttribute("data-follows-mid")}`;
+      }
+      return `tag:${li.getAttribute("data-tag-group") ?? ""}`;
+    });
+    // 动态排序把刚更新的 3 号 UP 放在关注列表前面，
+    // 但 2 号打了「影视」标签，随分组整体靠前，3 号落进「未分组」。
+    expect(entries).toEqual(["all", "tag:影视", "mid:2", "tag:", "mid:3"]);
   });
 
   it("首页点投稿卡片时在右侧窗格内嵌播放，不离开首页", async () => {
@@ -967,13 +990,17 @@ describe("extension manifest", () => {
     expect(manifest.name).toBe("只看关注");
   });
 
-  it("版本号是 0.5.0", () => {
-    expect(manifest.version).toBe("0.5.0");
+  it("版本号是 0.6.0", () => {
+    expect(manifest.version).toBe("0.6.0");
   });
 
   it("不申请 cookies 或 storage 权限", () => {
     expect(manifest.permissions ?? []).not.toContain("cookies");
     expect(manifest.permissions ?? []).not.toContain("storage");
+  });
+
+  it("不申请任何 permissions(标签分组只落在页面 localStorage)", () => {
+    expect(manifest.permissions ?? []).toEqual([]);
   });
 
   it("document_start 注入，matches 覆盖 bilibili 站点且不含 b23.tv", () => {
