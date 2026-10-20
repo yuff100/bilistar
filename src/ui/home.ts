@@ -51,20 +51,25 @@ function workLinks(mid: number): Array<{ text: string; href: string }> {
   ];
 }
 
-type PaneCollapse = { left: boolean; mid: boolean };
+type PaneCache = {
+  left: boolean;
+  mid: boolean;
+  pane: HTMLElement | null;
+  paneBvid: string | null;
+};
 
-// 折叠状态是渲染层的会话内 UI 状态:挂在渲染根节点的 WeakMap 上。
-// 同一会话里反复重绘(选人/继续看/播放)保持折叠;
-// 换根节点(新页面、测试夹具)自动回到展开,不用手动重置。
-const paneCollapse = new WeakMap<HTMLElement, PaneCollapse>();
+// 折叠状态和播放栏缓存都是渲染层的会话内 UI 状态:挂在渲染根节点的 WeakMap 上。
+// 同一会话里反复重绘(选人/继续看/播放)保持折叠,并保活正在播放的右栏节点;
+// 换根节点(新页面、测试夹具)自动回到展开和空栏,不用手动重置。
+const paneCacheMap = new WeakMap<HTMLElement, PaneCache>();
 
-function collapseOf(root: HTMLElement): PaneCollapse {
-  let state = paneCollapse.get(root);
-  if (state === undefined) {
-    state = { left: false, mid: false };
-    paneCollapse.set(root, state);
+function paneCacheOf(root: HTMLElement): PaneCache {
+  let cache = paneCacheMap.get(root);
+  if (cache === undefined) {
+    cache = { left: false, mid: false, pane: null, paneBvid: null };
+    paneCacheMap.set(root, cache);
   }
-  return state;
+  return cache;
 }
 
 function embedUrl(bvid: string): string {
@@ -84,7 +89,7 @@ export function renderHome(
   root.textContent = "";
 
   const { followings, submissions, selectedMid, hasMore, playingBvid } = state;
-  const collapsed = collapseOf(root);
+  const cache = paneCacheOf(root);
 
   ensureUiStyle(root.ownerDocument);
 
@@ -94,10 +99,10 @@ export function renderHome(
   restoreLeft.dataset.action = "restore-left";
   restoreLeft.textContent = PLAYER_COPY.restore;
   restoreLeft.setAttribute("aria-label", "展开关注栏");
-  restoreLeft.hidden = !collapsed.left;
+  restoreLeft.hidden = !cache.left;
 
   const sidebar = document.createElement("nav");
-  sidebar.hidden = collapsed.left;
+  sidebar.hidden = cache.left;
   const sideHead = document.createElement("header");
   const heading = document.createElement("h1");
   heading.textContent = HOME_COPY.sidebar;
@@ -107,12 +112,12 @@ export function renderHome(
   collapseLeft.textContent = PLAYER_COPY.collapse;
   collapseLeft.setAttribute("aria-label", "收起关注栏");
   collapseLeft.addEventListener("click", () => {
-    collapsed.left = true;
+    cache.left = true;
     sidebar.hidden = true;
     restoreLeft.hidden = false;
   });
   restoreLeft.addEventListener("click", () => {
-    collapsed.left = false;
+    cache.left = false;
     sidebar.hidden = false;
     restoreLeft.hidden = true;
   });
@@ -149,10 +154,10 @@ export function renderHome(
   restoreMid.dataset.action = "restore-mid";
   restoreMid.textContent = PLAYER_COPY.restore;
   restoreMid.setAttribute("aria-label", "展开投稿列表");
-  restoreMid.hidden = !collapsed.mid;
+  restoreMid.hidden = !cache.mid;
 
   const main = document.createElement("main");
-  main.hidden = collapsed.mid;
+  main.hidden = cache.mid;
 
   const mainHead = document.createElement("header");
   const collapseMid = document.createElement("button");
@@ -161,12 +166,12 @@ export function renderHome(
   collapseMid.textContent = PLAYER_COPY.collapse;
   collapseMid.setAttribute("aria-label", "收起投稿列表");
   collapseMid.addEventListener("click", () => {
-    collapsed.mid = true;
+    cache.mid = true;
     main.hidden = true;
     restoreMid.hidden = false;
   });
   restoreMid.addEventListener("click", () => {
-    collapsed.mid = false;
+    cache.mid = false;
     main.hidden = false;
     restoreMid.hidden = true;
   });
@@ -236,17 +241,40 @@ export function renderHome(
 
   // 右栏:B 站官方嵌入播放器,没有评论区;
   // 想看评论走「在 B 站打开」进完整播放页。
-  const playerPane = document.createElement("aside");
+  // 播放中的视频跨重绘保活:bvid 没变就把缓存的栏节点搬回新树,
+  // 同一个 iframe 元素被重新挂载,Chrome 里播放不中断;
+  // bvid 变了才重建 iframe(换视频本来就该重开)。
+  let playerPane: HTMLElement;
   if (playingBvid === null) {
+    cache.pane = null;
+    cache.paneBvid = null;
+    playerPane = document.createElement("aside");
     const placeholder = document.createElement("p");
     placeholder.textContent = PLAYER_COPY.empty;
     playerPane.appendChild(placeholder);
   } else {
+    const cachedPane =
+      cache.pane !== null && cache.paneBvid === playingBvid ? cache.pane : null;
+    const cachedFrame =
+      cachedPane === null ? null : cachedPane.querySelector("iframe");
+
+    let frame: HTMLIFrameElement;
+    if (cachedPane !== null && cachedFrame !== null) {
+      playerPane = cachedPane;
+      frame = cachedFrame;
+    } else {
+      playerPane = document.createElement("aside");
+      frame = document.createElement("iframe");
+      frame.src = embedUrl(playingBvid);
+      frame.setAttribute("allowfullscreen", "");
+      playerPane.appendChild(frame);
+    }
     playerPane.dataset.playing = "";
-    const frame = document.createElement("iframe");
-    frame.src = embedUrl(playingBvid);
-    frame.setAttribute("allowfullscreen", "");
-    playerPane.appendChild(frame);
+
+    // iframe 之后的部分按本次状态重建:标题随可见列表变化,链接接到本次 handlers。
+    while (frame.nextSibling !== null) {
+      frame.nextSibling.remove();
+    }
 
     const playing = submissions.find((item) => item.bvid === playingBvid);
     if (playing !== undefined) {
@@ -263,6 +291,9 @@ export function renderHome(
       handlers.onOpenVideo(playingBvid);
     });
     playerPane.appendChild(open);
+
+    cache.pane = playerPane;
+    cache.paneBvid = playingBvid;
   }
   root.appendChild(playerPane);
 }

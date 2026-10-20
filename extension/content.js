@@ -475,14 +475,14 @@
       }
     ];
   }
-  var paneCollapse = /* @__PURE__ */ new WeakMap();
-  function collapseOf(root) {
-    let state = paneCollapse.get(root);
-    if (state === void 0) {
-      state = { left: false, mid: false };
-      paneCollapse.set(root, state);
+  var paneCacheMap = /* @__PURE__ */ new WeakMap();
+  function paneCacheOf(root) {
+    let cache = paneCacheMap.get(root);
+    if (cache === void 0) {
+      cache = { left: false, mid: false, pane: null, paneBvid: null };
+      paneCacheMap.set(root, cache);
     }
-    return state;
+    return cache;
   }
   function embedUrl(bvid) {
     return `https://player.bilibili.com/player.html?bvid=${bvid}&autoplay=1&danmaku=1`;
@@ -494,16 +494,16 @@
     root.id = "follows-root";
     root.textContent = "";
     const { followings, submissions, selectedMid, hasMore, playingBvid } = state;
-    const collapsed = collapseOf(root);
+    const cache = paneCacheOf(root);
     ensureUiStyle(root.ownerDocument);
     const restoreLeft = document.createElement("button");
     restoreLeft.type = "button";
     restoreLeft.dataset.action = "restore-left";
     restoreLeft.textContent = PLAYER_COPY.restore;
     restoreLeft.setAttribute("aria-label", "\u5C55\u5F00\u5173\u6CE8\u680F");
-    restoreLeft.hidden = !collapsed.left;
+    restoreLeft.hidden = !cache.left;
     const sidebar = document.createElement("nav");
-    sidebar.hidden = collapsed.left;
+    sidebar.hidden = cache.left;
     const sideHead = document.createElement("header");
     const heading = document.createElement("h1");
     heading.textContent = HOME_COPY.sidebar;
@@ -513,12 +513,12 @@
     collapseLeft.textContent = PLAYER_COPY.collapse;
     collapseLeft.setAttribute("aria-label", "\u6536\u8D77\u5173\u6CE8\u680F");
     collapseLeft.addEventListener("click", () => {
-      collapsed.left = true;
+      cache.left = true;
       sidebar.hidden = true;
       restoreLeft.hidden = false;
     });
     restoreLeft.addEventListener("click", () => {
-      collapsed.left = false;
+      cache.left = false;
       sidebar.hidden = false;
       restoreLeft.hidden = true;
     });
@@ -552,9 +552,9 @@
     restoreMid.dataset.action = "restore-mid";
     restoreMid.textContent = PLAYER_COPY.restore;
     restoreMid.setAttribute("aria-label", "\u5C55\u5F00\u6295\u7A3F\u5217\u8868");
-    restoreMid.hidden = !collapsed.mid;
+    restoreMid.hidden = !cache.mid;
     const main = document.createElement("main");
-    main.hidden = collapsed.mid;
+    main.hidden = cache.mid;
     const mainHead = document.createElement("header");
     const collapseMid = document.createElement("button");
     collapseMid.type = "button";
@@ -562,12 +562,12 @@
     collapseMid.textContent = PLAYER_COPY.collapse;
     collapseMid.setAttribute("aria-label", "\u6536\u8D77\u6295\u7A3F\u5217\u8868");
     collapseMid.addEventListener("click", () => {
-      collapsed.mid = true;
+      cache.mid = true;
       main.hidden = true;
       restoreMid.hidden = false;
     });
     restoreMid.addEventListener("click", () => {
-      collapsed.mid = false;
+      cache.mid = false;
       main.hidden = false;
       restoreMid.hidden = true;
     });
@@ -624,17 +624,32 @@
     }
     root.appendChild(main);
     root.appendChild(restoreMid);
-    const playerPane = document.createElement("aside");
+    let playerPane;
     if (playingBvid === null) {
+      cache.pane = null;
+      cache.paneBvid = null;
+      playerPane = document.createElement("aside");
       const placeholder = document.createElement("p");
       placeholder.textContent = PLAYER_COPY.empty;
       playerPane.appendChild(placeholder);
     } else {
+      const cachedPane = cache.pane !== null && cache.paneBvid === playingBvid ? cache.pane : null;
+      const cachedFrame = cachedPane === null ? null : cachedPane.querySelector("iframe");
+      let frame;
+      if (cachedPane !== null && cachedFrame !== null) {
+        playerPane = cachedPane;
+        frame = cachedFrame;
+      } else {
+        playerPane = document.createElement("aside");
+        frame = document.createElement("iframe");
+        frame.src = embedUrl(playingBvid);
+        frame.setAttribute("allowfullscreen", "");
+        playerPane.appendChild(frame);
+      }
       playerPane.dataset.playing = "";
-      const frame = document.createElement("iframe");
-      frame.src = embedUrl(playingBvid);
-      frame.setAttribute("allowfullscreen", "");
-      playerPane.appendChild(frame);
+      while (frame.nextSibling !== null) {
+        frame.nextSibling.remove();
+      }
       const playing = submissions.find((item) => item.bvid === playingBvid);
       if (playing !== void 0) {
         const title = document.createElement("h2");
@@ -649,6 +664,8 @@
         handlers.onOpenVideo(playingBvid);
       });
       playerPane.appendChild(open);
+      cache.pane = playerPane;
+      cache.paneBvid = playingBvid;
     }
     root.appendChild(playerPane);
   }

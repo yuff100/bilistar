@@ -323,6 +323,81 @@ describe("renderHome", () => {
     ).toBe(false);
   });
 
+  it("keeps the same iframe element across a load-more re-render", () => {
+    const handlers = createHandlers();
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+
+    renderHome(
+      root,
+      makeState({ playingBvid: "BV1", hasMore: true }),
+      handlers,
+    );
+    const frameBefore = root.querySelector("aside iframe");
+
+    const loadedMore: Submission[] = [
+      ...submissions,
+      {
+        bvid: "BV3",
+        title: "继续看加载出来的投稿",
+        authorMid: 2,
+        authorName: "影视飓风",
+        publishedAt: 1_700_000_000_000,
+      },
+    ];
+    renderHome(
+      root,
+      makeState({
+        submissions: loadedMore,
+        playingBvid: "BV1",
+        hasMore: false,
+      }),
+      handlers,
+    );
+
+    expect(root.querySelector("aside iframe")).toBe(frameBefore);
+    expect(root.querySelector('[data-bvid="BV3"]')).not.toBeNull();
+  });
+
+  it("keeps the same iframe element across a selection re-render", () => {
+    const handlers = createHandlers();
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+
+    renderHome(root, makeState({ playingBvid: "BV1" }), handlers);
+    const frameBefore = root.querySelector("aside iframe");
+
+    renderHome(
+      root,
+      makeState({
+        // 选中 UP 后 main.ts 会传入该 UP 的投稿,BV1 不在其中。
+        submissions: submissions.filter((item) => item.authorMid === 3),
+        selectedMid: 3,
+        playingBvid: "BV1",
+      }),
+      handlers,
+    );
+
+    expect(root.querySelector("aside iframe")).toBe(frameBefore);
+    // 播放器之外的部分仍按本次状态重建:播放的视频不在列表里就不再显示标题。
+    expect(root.querySelector("aside h2")).toBeNull();
+  });
+
+  it("rebuilds the iframe when the playing video changes", () => {
+    const handlers = createHandlers();
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+
+    renderHome(root, makeState({ playingBvid: "BV1" }), handlers);
+    const frameBefore = root.querySelector("aside iframe");
+
+    renderHome(root, makeState({ playingBvid: "BV2" }), handlers);
+    const frameAfter = root.querySelector("aside iframe");
+
+    expect(frameAfter).not.toBe(frameBefore);
+    expect(frameAfter?.getAttribute("src")).toContain("bvid=BV2");
+  });
+
   it("uses the exact copy strings", () => {
     expect(HOME_COPY).toEqual({
       sidebar: "关注",
